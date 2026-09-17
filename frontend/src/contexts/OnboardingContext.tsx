@@ -61,7 +61,7 @@ interface OnboardingContextType {
   setDatabaseExists: (value: boolean) => void;
   setPermissionStatus: (permission: keyof OnboardingPermissions, status: PermissionStatus) => void;
   setPermissionsSkipped: (skipped: boolean) => void;
-  completeOnboarding: () => Promise<void>;
+  completeOnboarding: (provider?: 'sensevoice') => Promise<void>;
   startBackgroundDownloads: (options: StartBackgroundDownloadsOptions) => Promise<void>;
   retryParakeetDownload: () => Promise<void>;
 }
@@ -468,7 +468,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     }
   };
 
-  const completeOnboarding = async () => {
+  const completeOnboarding = async (provider?: 'sensevoice') => {
     try {
       // Set completion flag to prevent race conditions with auto-save
       isCompletingRef.current = true;
@@ -477,6 +477,13 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
         saveTimeoutRef.current = undefined;
+      }
+
+      if (provider === 'sensevoice') {
+        await invoke('complete_sensevoice_onboarding');
+        setCompleted(true);
+        isCompletingRef.current = false;
+        return;
       }
 
       let modelToSave = selectedSummaryModel;

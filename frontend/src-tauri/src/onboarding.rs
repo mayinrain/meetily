@@ -129,6 +129,27 @@ pub async fn reset_onboarding_status<R: Runtime>(
 
 /// Tauri commands for onboarding status
 #[tauri::command]
+pub async fn complete_sensevoice_onboarding<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if !crate::audio::transcription::sensevoice_provider::sensevoice_status().await? {
+        return Err("Local SenseVoice service is not ready".to_string());
+    }
+    SettingsRepository::save_transcript_config(
+        state.db_manager.pool(), "sensevoice", "sensevoice-small-int8",
+    ).await.map_err(|e| format!("Failed to save SenseVoice configuration: {}", e))?;
+
+    let mut status = load_onboarding_status(&app).await.map_err(|e| e.to_string())?;
+    status.completed = true;
+    status.current_step = 4;
+    // Preserve the actual download status; the shared service owns its ASR model.
+    save_onboarding_status(&app, &status).await.map_err(|e| e.to_string())?;
+    info!("Onboarding completed with local SenseVoice; summary setup deferred");
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_onboarding_status<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<Option<OnboardingStatus>, String> {

@@ -40,7 +40,21 @@ impl SummaryProcessesRepository {
             return Ok(false);
         }
 
-        let result_json = serde_json::to_string(summary);
+        // Keep the original source evidence when the editable summary is saved.
+        let mut summary = summary.clone();
+        if let Some(object) = summary.as_object_mut() {
+            let previous: Option<(Option<String>,)> = sqlx::query_as(
+                "SELECT result FROM summary_processes WHERE meeting_id = ?")
+                .bind(meeting_id).fetch_optional(&mut *transaction).await?;
+            if let Some((Some(raw),)) = previous {
+                if let Ok(previous) = serde_json::from_str::<Value>(&raw) {
+                    if let Some(evidence) = previous.get("source_excerpts") {
+                        object.insert("source_excerpts".into(), evidence.clone());
+                    }
+                }
+            }
+        }
+        let result_json = serde_json::to_string(&summary);
         if result_json.is_err() {
             error!("Can't convert the json to string for saving to Database");
             transaction.rollback().await?;
@@ -265,6 +279,25 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn editing_excerpts_preserves_original_source_evidence() {
+        let pool = test_pool().await;
+        sqlx::query("CREATE TABLE meetings (id TEXT PRIMARY KEY, updated_at TEXT)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO meetings (id) VALUES ('source-meeting')")
+            .execute(&pool).await.unwrap();
+        let evidence = json!({"sources": [{"id": "t1", "text": "利润"}], "ranges": [[0,0]]});
+        let original = json!({"markdown": "原句", "source_excerpts": evidence}).to_string();
+        seed_pending(&pool, "source-meeting", Utc::now(), Some(&original), None).await;
+        assert!(SummaryProcessesRepository::update_meeting_summary(&pool, "source-meeting",
+            &json!({"markdown": "人工校正", "source_excerpts": null})).await.unwrap());
+        let (raw,): (String,) = sqlx::query_as("SELECT result FROM summary_processes WHERE meeting_id = 'source-meeting'")
+            .fetch_one(&pool).await.unwrap();
+        let saved: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(saved["markdown"], "人工校正");
+        assert_eq!(saved["source_excerpts"], evidence);
     }
 
     #[tokio::test]

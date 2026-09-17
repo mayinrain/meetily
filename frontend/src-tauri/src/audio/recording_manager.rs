@@ -514,9 +514,9 @@ impl RecordingManager {
         self.recording_saver.set_meeting_name(name);
     }
 
-    /// Add a structured transcript segment to be saved later
-    pub fn add_transcript_segment(&self, segment: super::recording_saver::TranscriptSegment) {
-        self.recording_saver.add_transcript_segment(segment);
+    /// Persist queued transcripts even after this manager is taken for shutdown.
+    pub fn transcript_sink(&self) -> impl Fn(super::recording_saver::TranscriptSegment) + Send + Sync + 'static {
+        self.recording_saver.transcript_sink()
     }
 
     /// Add a transcript chunk to be saved later (legacy method)

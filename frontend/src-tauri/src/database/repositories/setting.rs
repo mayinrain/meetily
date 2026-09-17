@@ -179,7 +179,7 @@ impl SettingsRepository {
     ) -> std::result::Result<(), sqlx::Error> {
         let api_key_column = match provider {
             "localWhisper" => "whisperApiKey",
-            "parakeet" => return Ok(()), // Parakeet doesn't need an API key, return early
+            "parakeet" | "sensevoice" => return Ok(()), // Local providers need no API key
             "deepgram" => "deepgramApiKey",
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",
@@ -211,7 +211,7 @@ impl SettingsRepository {
     ) -> std::result::Result<Option<String>, sqlx::Error> {
         let api_key_column = match provider {
             "localWhisper" => "whisperApiKey",
-            "parakeet" => return Ok(None), // Parakeet doesn't need an API key
+            "parakeet" | "sensevoice" => return Ok(None), // Local providers need no API key
             "deepgram" => "deepgramApiKey",
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",
@@ -344,5 +344,26 @@ impl SettingsRepository {
         .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sensevoice_config_loads_without_api_key() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        SettingsRepository::save_transcript_config(&pool, "sensevoice", "sensevoice-small-int8")
+            .await.unwrap();
+        SettingsRepository::save_transcript_api_key(&pool, "sensevoice", "unused")
+            .await.unwrap();
+
+        let config = SettingsRepository::get_transcript_config(&pool).await.unwrap().unwrap();
+        assert_eq!(config.provider, "sensevoice");
+        assert_eq!(config.model, "sensevoice-small-int8");
+        assert_eq!(SettingsRepository::get_transcript_api_key(&pool, &config.provider).await.unwrap(), None);
+        assert!(SettingsRepository::get_transcript_api_key(&pool, "unknown-provider").await.is_err());
     }
 }

@@ -359,6 +359,66 @@ impl SummaryService {
             }
         };
 
+        // Keep the same lifecycle lock as recording/import until the native
+        // helper has exited. Speaker workers also expose their active stage.
+        let _engine_lifecycle_guard = if provider == LLMProvider::BuiltInAI {
+            let preparation = async {
+                let guard = crate::audio::common::try_acquire_engine_lifecycle_lock()?;
+                if crate::audio::recording_commands::is_recording().await {
+                    return Err("请先停止录制，再生成本地纪要".to_string());
+                }
+                let config = SettingsRepository::get_transcript_config(&pool).await
+                    .map_err(|e| e.to_string())?;
+                if config.is_some_and(|c| c.provider == "sensevoice") {
+                    crate::audio::transcription::sensevoice_provider::SenseVoiceProvider::new()?
+                        .require_idle_and_unloaded().await?;
+                }
+                Ok(guard)
+            }.await;
+            match preparation {
+                Ok(guard) => Some(guard),
+                Err(error) => {
+                    Self::fail_and_cleanup(&pool, &meeting_id, started_at, &error).await;
+                    return;
+                }
+            }
+        } else { None };
+
+        if template_id == "source_excerpts" {
+            let mut result = if provider != LLMProvider::BuiltInAI {
+                Err("原句摘录目前使用内置本地模型，请在模型设置中选择 Built-in AI".to_string())
+            } else {
+                match _app.path().app_data_dir() {
+                    Ok(directory) => super::excerpts::generate(&pool, &meeting_id, &directory,
+                        &model_name, &cancellation_token).await,
+                    Err(error) => Err(error.to_string()),
+                }
+            };
+            if provider == LLMProvider::BuiltInAI {
+                if let Err(error) = crate::summary::summary_engine::client::force_shutdown_sidecar().await {
+                    result = Err(format!("Failed to release local summary model: {error}"));
+                }
+            }
+            if cancellation_token.is_cancelled() {
+                if let Err(error) = SummaryProcessesRepository::update_process_cancelled(
+                    &pool, &meeting_id, started_at).await { error!("{error}"); }
+            } else {
+                match result {
+                    Ok((result, count)) => {
+                        match SummaryProcessesRepository::update_process_completed(&pool, &meeting_id,
+                            started_at, result, count, start_time.elapsed().as_secs_f64()).await {
+                            Ok(true) => info!("Source excerpts saved for meeting_id: {}", meeting_id),
+                            Ok(false) => warn!("Skipped stale source excerpts for meeting_id: {}", meeting_id),
+                            Err(error) => Self::update_process_failed(&pool, &meeting_id, started_at, &error.to_string()).await,
+                        }
+                    }
+                    Err(error) => Self::update_process_failed(&pool, &meeting_id, started_at, &error).await,
+                }
+            }
+            Self::cleanup_cancellation_token(&meeting_id, started_at);
+            return;
+        }
+
         // Validate and setup api_key, Flexible for Ollama, BuiltInAI, and CustomOpenAI
         let api_key = if provider == LLMProvider::Ollama || provider == LLMProvider::BuiltInAI || provider == LLMProvider::CustomOpenAI {
             // These providers don't require API keys from the standard database column
@@ -544,7 +604,7 @@ impl SummaryService {
         };
 
         let client = reqwest::Client::new();
-        let result = generate_meeting_summary(
+        let mut result = generate_meeting_summary(
             &client,
             &provider,
             &model_name,
@@ -566,6 +626,12 @@ impl SummaryService {
             cached_english.as_deref(),
         )
         .await;
+
+        if provider == LLMProvider::BuiltInAI {
+            if let Err(error) = crate::summary::summary_engine::client::force_shutdown_sidecar().await {
+                result = Err(format!("Failed to release local summary model: {error}"));
+            }
+        }
 
         let duration = start_time.elapsed().as_secs_f64();
 

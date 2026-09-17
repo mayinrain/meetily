@@ -96,6 +96,10 @@ pub async fn start_retranscription<R: Runtime>(
     model: Option<String>,
     provider: Option<String>,
 ) -> Result<RetranscriptionResult> {
+    let _engine_lifecycle_guard = super::common::try_acquire_engine_lifecycle_lock().map_err(|e| anyhow!(e))?;
+    if super::recording_commands::is_recording().await {
+        return Err(anyhow!("请先停止录制，再重新转写"));
+    }
     // Acquire guard - ensures flag is cleared even on panic/early return
     let _guard = RetranscriptionGuard::acquire().map_err(|e| anyhow!(e))?;
 
@@ -103,10 +107,15 @@ pub async fn start_retranscription<R: Runtime>(
     RETRANSCRIPTION_CANCELLED.store(false, Ordering::SeqCst);
 
     let use_parakeet = provider.as_deref() == Some("parakeet");
+    let use_sensevoice = provider.as_deref() == Some("sensevoice");
     let result = run_retranscription(app.clone(), meeting_id.clone(), meeting_folder_path, language, model, provider).await;
 
     // Unload the engine after the batch job (success, failure, or cancellation)
-    super::common::unload_engine_after_batch(use_parakeet).await;
+    if use_sensevoice {
+        super::transcription::sensevoice_provider::unload_after_transcription().await;
+    } else {
+        super::common::unload_engine_after_batch(use_parakeet).await;
+    }
 
     // Guard will automatically clear flag on drop
     // No need for manual: RETRANSCRIPTION_IN_PROGRESS.store(false, Ordering::SeqCst);
@@ -183,6 +192,7 @@ async fn run_retranscription<R: Runtime>(
 
     // Determine which provider to use (default to whisper)
     let use_parakeet = provider.as_deref() == Some("parakeet");
+    let use_sensevoice = provider.as_deref() == Some("sensevoice");
 
     info!(
         "Starting retranscription for meeting {} with language {:?}, model {:?}, provider {:?}",
@@ -300,13 +310,21 @@ async fn run_retranscription<R: Runtime>(
     emit_progress(&app, &meeting_id, "transcribing", 25, "Loading transcription engine...");
 
     // Initialize the appropriate engine once (not per-segment)
-    let whisper_engine = if !use_parakeet {
+    let whisper_engine = if !use_parakeet && !use_sensevoice {
         Some(get_or_init_whisper(&app, model.as_deref()).await?)
     } else {
         None
     };
     let parakeet_engine = if use_parakeet {
         Some(get_or_init_parakeet(&app, model.as_deref()).await?)
+    } else {
+        None
+    };
+    let sensevoice_engine = if use_sensevoice {
+        let engine = crate::audio::transcription::sensevoice_provider::SenseVoiceProvider::new()
+            .map_err(|e| anyhow!(e))?;
+        engine.prepare().await.map_err(|e| anyhow!(e))?;
+        Some(engine)
     } else {
         None
     };
@@ -369,7 +387,13 @@ async fn run_retranscription<R: Runtime>(
         }
 
         // Transcribe this segment
-        let (text, conf) = if use_parakeet {
+        let (text, conf) = if use_sensevoice {
+            use crate::audio::transcription::provider::TranscriptionProvider;
+            let result = sensevoice_engine.as_ref().unwrap()
+                .transcribe(segment.samples.clone(), language.clone()).await
+                .map_err(|e| anyhow!("SenseVoice transcription failed on segment {}: {}", i, e))?;
+            (result.text, 0.0f32)
+        } else if use_parakeet {
             let engine = parakeet_engine.as_ref().unwrap();
             let text = engine
                 .transcribe_audio(segment.samples.clone())

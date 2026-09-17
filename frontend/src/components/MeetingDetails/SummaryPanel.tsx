@@ -21,6 +21,7 @@ import {
   SummaryLanguageStorage,
 } from '@/lib/summary-language-preferences';
 import { hasVisibleSummaryContent } from '@/lib/summary-content';
+import { invoke } from '@tauri-apps/api/core';
 
 interface SummaryPanelProps {
   meeting: {
@@ -242,7 +243,17 @@ export function SummaryPanel({
   );
 
   return (
-    <div className="flex-1 min-w-0 flex flex-col bg-white overflow-hidden h-full w-full @container">
+    <div className="flex-1 min-w-0 flex flex-col bg-white overflow-hidden h-full w-full @container"
+      onClickCapture={event => {
+        const link = (event.target as HTMLElement).closest('a');
+        const match = link?.getAttribute('href')?.match(/^#meetily-time=(\d+(?:\.\d+)?)$/);
+        if (!match) return;
+        event.preventDefault();
+        event.stopPropagation();
+        window.dispatchEvent(new CustomEvent('meetily-seek-recording', {
+          detail: { meetingId: meeting.id, seconds: Number(match[1]) },
+        }));
+      }}>
       {/* Top-level actions — always visible, same pattern as TranscriptPanel */}
       <div className="p-4 border-b border-gray-200">
         <div className="flex items-center justify-center w-full min-w-0 gap-2 flex-wrap">
@@ -262,7 +273,7 @@ export function SummaryPanel({
               hasSummary={hasSummary}
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={onOpenModelSettings}
-              languageSlot={transcripts.length > 0 || hasSummary ? languageSlot : undefined}
+              languageSlot={selectedTemplate !== 'source_excerpts' && (transcripts.length > 0 || hasSummary) ? languageSlot : undefined}
             />
           </div>
 
@@ -273,11 +284,23 @@ export function SummaryPanel({
                 isDirty={isSummaryDirty}
                 onSave={onSaveAll}
                 onCopy={onCopySummary}
+                onExport={async () => {
+                  try {
+                    const markdown = await summaryRef.current?.getMarkdown();
+                    if (!markdown?.trim()) throw new Error('没有可导出的纪要');
+                    const path = await invoke<string | null>('export_meeting_summary', { meetingId: meeting.id, markdown });
+                    if (path) toast.success('纪要已导出', { description: path });
+                  } catch (error) { toast.error(String(error)); }
+                }}
               />
             </div>
           )}
         </div>
       </div>
+
+      {selectedTemplate === 'source_excerpts' && <p className="px-4 py-2 text-xs text-gray-600">
+        原句摘录保留转写原文与录音时间，可编辑校正。模型可能遗漏重点，请结合完整转写核对。
+      </p>}
 
       {isSummaryLoading ? (
         <div className="flex items-center justify-center flex-1">

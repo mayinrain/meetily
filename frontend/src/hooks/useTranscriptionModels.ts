@@ -8,7 +8,7 @@ export interface RawModelInfo {
 }
 
 export interface ModelOption {
-  provider: 'whisper' | 'parakeet';
+  provider: 'whisper' | 'parakeet' | 'sensevoice';
   name: string;
   displayName: string;
   size_mb: number;
@@ -44,6 +44,14 @@ export function useTranscriptionModels(transcriptModelConfig: TranscriptModelCon
   const fetchModels = useCallback(async () => {
     setLoadingModels(true);
     const allModels: ModelOption[] = [];
+    try {
+      if (await invoke<boolean>('sensevoice_status')) {
+        allModels.push({ provider: 'sensevoice', name: 'sensevoice-small-int8',
+          displayName: 'SenseVoice Small · 本机离线', size_mb: 228 });
+      }
+    } catch (err) {
+      console.info('SenseVoice service unavailable:', err);
+    }
 
     // Fetch Whisper models
     try {
@@ -88,7 +96,8 @@ export function useTranscriptionModels(transcriptModelConfig: TranscriptModelCon
     const configuredMatch = allModels.find(
       (m) =>
         (configuredProvider === 'localWhisper' && m.provider === 'whisper' && m.name === configuredModel) ||
-        (configuredProvider === 'parakeet' && m.provider === 'parakeet' && m.name === configuredModel)
+        (configuredProvider === 'parakeet' && m.provider === 'parakeet' && m.name === configuredModel) ||
+        (configuredProvider === 'sensevoice' && m.provider === 'sensevoice' && m.name === configuredModel)
     );
 
     // Only set default model if user hasn't manually selected one

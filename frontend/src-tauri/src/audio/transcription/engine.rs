@@ -88,6 +88,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
 
     // Validate based on provider
     match config.provider.as_str() {
+        "sensevoice" => super::sensevoice_provider::SenseVoiceProvider::new()?.prepare().await,
         "localWhisper" => {
             info!("🔍 Validating Whisper model...");
             // Ensure whisper engine is initialized first
@@ -184,6 +185,9 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
 
     // Initialize the appropriate engine based on provider
     match config.provider.as_str() {
+        "sensevoice" => Ok(TranscriptionEngine::Provider(Arc::new(
+            super::sensevoice_provider::SenseVoiceProvider::new()?,
+        ))),
         "parakeet" => {
             info!("🦜 Initializing Parakeet transcription engine");
 

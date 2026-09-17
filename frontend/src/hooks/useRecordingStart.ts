@@ -82,6 +82,7 @@ export function useRecordingStart(
   const checkTranscriptionModelReady = useCallback(async (): Promise<boolean> => {
     try {
       const provider = await getTranscriptionProvider();
+      if (provider === 'sensevoice') return await invoke<boolean>('sensevoice_status');
       const commands = getProviderCommands(provider);
 
       if (commands) {

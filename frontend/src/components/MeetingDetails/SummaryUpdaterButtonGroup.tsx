@@ -2,7 +2,7 @@
 
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, Save, Loader2 } from 'lucide-react';
+import { Copy, Save, Loader2, Download } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 
 interface SummaryUpdaterButtonGroupProps {
@@ -10,6 +10,7 @@ interface SummaryUpdaterButtonGroupProps {
   isDirty: boolean;
   onSave: () => Promise<void>;
   onCopy: () => Promise<void>;
+  onExport: () => Promise<void>;
 }
 
 export function SummaryUpdaterButtonGroup({
@@ -17,6 +18,7 @@ export function SummaryUpdaterButtonGroup({
   isDirty,
   onSave,
   onCopy,
+  onExport,
 }: SummaryUpdaterButtonGroupProps) {
   return (
     <ButtonGroup>
@@ -60,6 +62,9 @@ export function SummaryUpdaterButtonGroup({
         <span className="hidden @[40rem]:inline">Copy</span>
       </Button>
 
+      <Button variant="outline" size="sm" title="导出纪要 Markdown" onClick={() => void onExport()}>
+        <Download /><span className="hidden @[40rem]:inline">导出</span>
+      </Button>
     </ButtonGroup>
   );
 }

@@ -11,8 +11,10 @@ import {
 } from "@/components/ui/tooltip";
 
 export function SetupOverviewStep() {
-  const { goNext } = useOnboarding();
+  const { goNext, completeOnboarding } = useOnboarding();
   const [isMac, setIsMac] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [serviceError, setServiceError] = useState('');
 
   useEffect(() => {
     const checkPlatform = async () => {
@@ -43,10 +45,23 @@ export function SetupOverviewStep() {
     goNext();
   };
 
+  const useSenseVoice = async () => {
+    setConnecting(true);
+    setServiceError('');
+    try {
+      await completeOnboarding('sensevoice');
+      window.location.reload();
+    } catch (error) {
+      setServiceError(String(error));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
   return (
     <OnboardingContainer
       title="Setup Overview"
-      description="Meetily requires that you download the Transcription & Summarization AI models for the software to work."
+      description="Download the built-in models, or connect to your local SenseVoice service."
       step={2}
       totalSteps={isMac ? 4 : 3}
     >
@@ -92,10 +107,18 @@ export function SetupOverviewStep() {
         <div className="w-full max-w-xs space-y-4">
           <Button
             onClick={handleContinue}
+            disabled={connecting}
             className="w-full h-11 bg-gray-900 hover:bg-gray-800 text-white"
           >
             Let's Go
           </Button>
+          <Button variant="outline" className="w-full h-11" onClick={useSenseVoice} disabled={connecting}>
+            {connecting ? 'Connecting…' : 'Use Local SenseVoice'}
+          </Button>
+          <p className="text-xs text-gray-600 text-center">
+            Uses the SenseVoice service on this computer. Configure a summary model later in Settings.
+          </p>
+          {serviceError && <p role="alert" className="text-sm text-red-600">{serviceError}</p>}
           <div className="text-center">
             <a
               href="https://github.com/Zackriya-Solutions/meeting-minutes"

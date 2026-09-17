@@ -498,19 +498,21 @@ impl SidecarManager {
         // Kill process if still running
         {
             let mut child_lock = self.child_process.lock().await;
-            if let Some(mut child) = child_lock.take() {
+            if let Some(child) = child_lock.as_mut() {
                 match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
                     Ok(Ok(status)) => {
                         log::info!("Sidecar exited with status: {}", status);
                     }
                     Ok(Err(e)) => {
                         log::error!("Failed to wait for sidecar: {}", e);
+                        child.kill().await.context("Failed to terminate summary sidecar")?;
                     }
                     Err(_) => {
                         log::warn!("Sidecar didn't exit gracefully, killing");
-                        let _ = child.kill().await;
+                        child.kill().await.context("Failed to terminate summary sidecar")?;
                     }
                 }
+                *child_lock = None;
             }
         }
 

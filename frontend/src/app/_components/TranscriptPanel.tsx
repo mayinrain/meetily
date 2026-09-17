@@ -10,6 +10,7 @@ import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
 import { useMemo } from 'react';
+import { useRecordingSpeakers } from '@/hooks/useRecordingSpeakers';
 
 /**
  * TranscriptPanel Component
@@ -36,6 +37,7 @@ export function TranscriptPanel({
   const { isRecording, isPaused } = useRecordingState();
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
   const isLinux = useIsLinux();
+  const speakers = useRecordingSpeakers(isRecording || isStopping || isProcessingStop);
 
   // Convert transcripts to segments for virtualized view
   const segments = useMemo(() =>
@@ -50,7 +52,7 @@ export function TranscriptPanel({
   );
 
   return (
-    <div ref={transcriptContainerRef} className="w-full border-r border-gray-200 bg-white flex flex-col overflow-y-auto">
+    <div ref={transcriptContainerRef} className="w-full min-h-0 border-r border-gray-200 bg-white flex flex-col overflow-hidden">
       {/* Title area - Sticky header */}
       <div className="sticky top-0 z-10 bg-white p-4 border-gray-200">
         <div className="flex flex-col space-y-3">
@@ -101,10 +103,17 @@ export function TranscriptPanel({
         </div>
       )}
 
+      {speakers?.error && <p role="status" className="px-4 text-sm text-amber-700">
+        说话人分析已停止，录音和转写继续保留，可在保存后重新分析。
+      </p>}
+      {speakers?.status === 'running' && !speakers.result && <p role="status" className="px-4 text-sm text-gray-500">
+        正在准备说话人标记，停止录制后完成。
+      </p>}
+
       {/* Transcript content */}
-      <div className="pb-20">
-        <div className="flex justify-center">
-          <div className="w-2/3 max-w-[750px]">
+      <div className="flex-1 min-h-0 pb-20">
+        <div className="flex h-full min-h-0 justify-center">
+          <div className="w-2/3 h-full min-h-0 max-w-[750px]">
             <VirtualizedTranscriptView
               segments={segments}
               isRecording={isRecording}
@@ -113,6 +122,18 @@ export function TranscriptPanel({
               isStopping={isStopping}
               enableStreaming={isRecording}
               showConfidence={true}
+              renderSpeaker={id => {
+                const segment = segments.find(s => s.id === id);
+                if (!segment || !speakers?.result || !['running', 'completed'].includes(speakers.status)) return null;
+                // The publication boundary comes from complete ASR batches, not raw PCM ticks.
+                const published = speakers.result.published_through_s ?? 0;
+                if (!segment.endTime || segment.endTime > published+1e-6) return null;
+                const ids = [...new Set(speakers.result.turns.filter(t =>
+                  t.end > segment.timestamp && t.start < (segment.endTime ?? segment.timestamp)
+                ).map(t => t.speaker))].sort((a, b) => a-b);
+                return <span>{ids.length ? ids.map(s => `说话人 ${s}`).join(' / ') : '待确认'}
+                  {speakers.status === 'running' ? ' · 暂定' : ''}</span>;
+              }}
             />
           </div>
         </div>

@@ -10,16 +10,16 @@ use uuid::Uuid;
 static ENGINE_LIFECYCLE_LOCK: Lazy<Arc<AsyncMutex<()>>> =
     Lazy::new(|| Arc::new(AsyncMutex::new(())));
 
-pub(crate) async fn acquire_engine_lifecycle_lock() -> OwnedMutexGuard<()> {
-    ENGINE_LIFECYCLE_LOCK.clone().lock_owned().await
+pub(crate) fn try_acquire_engine_lifecycle_lock() -> std::result::Result<OwnedMutexGuard<()>, String> {
+    ENGINE_LIFECYCLE_LOCK.clone().try_lock_owned()
+        .map_err(|_| "另一个本地处理任务正在运行，请等待完成或取消后再试".to_string())
 }
 
 /// Unload the transcription engine after a batch job (import or retranscription).
+/// The caller holds ENGINE_LIFECYCLE_LOCK through processing and unloading.
 /// Skips unloading if a live recording is currently in progress, since recording
 /// uses the same global engine instances.
 pub(crate) async fn unload_engine_after_batch(use_parakeet: bool) {
-    let _engine_lifecycle_guard = acquire_engine_lifecycle_lock().await;
-
     if crate::audio::recording_commands::is_recording().await {
         log::info!("Skipping model unload after batch: recording in progress");
         return;
@@ -217,20 +217,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_lifecycle_lock_serializes_acquirers() {
-        let guard = acquire_engine_lifecycle_lock().await;
+        let guard = ENGINE_LIFECYCLE_LOCK.clone().lock_owned().await;
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();
         let waiter = tokio::spawn(async {
             started_tx.send(()).unwrap();
-            let _guard = acquire_engine_lifecycle_lock().await;
+            let _guard = ENGINE_LIFECYCLE_LOCK.clone().lock_owned().await;
             acquired_tx.send(()).unwrap();
         });
 
         started_rx.await.unwrap();
         assert!(acquired_rx.try_recv().is_err());
+        assert!(try_acquire_engine_lifecycle_lock().is_err());
         drop(guard);
 
         acquired_rx.await.unwrap();
         waiter.await.unwrap();
+        assert!(try_acquire_engine_lifecycle_lock().is_ok());
     }
 }

@@ -3,7 +3,9 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw } from 'lucide-react';
+import { Copy, Download, FolderOpen, RefreshCw } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -29,6 +31,19 @@ export function TranscriptButtonGroup({
 }: TranscriptButtonGroupProps) {
   const { betaFeatures } = useConfig();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const exportTranscript = async () => {
+    setIsExporting(true);
+    try {
+      const path = await invoke<string | null>('export_meeting_transcript', { meetingId });
+      if (path) toast.success('Transcript exported');
+    } catch (error) {
+      toast.error(`Failed to export transcript: ${error}`);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const handleRetranscribeComplete = useCallback(async () => {
     // Refetch transcripts to show the updated data
@@ -54,6 +69,14 @@ export function TranscriptButtonGroup({
           <Copy />
           <span className="hidden @[22rem]:inline">Copy</span>
         </Button>
+
+        {meetingId && (
+          <Button variant="outline" size="sm" onClick={exportTranscript}
+            disabled={transcriptCount === 0 || isExporting} title="Export Transcript">
+            <Download />
+            <span className="hidden @[22rem]:inline">Export</span>
+          </Button>
+        )}
 
         <Button
           size="sm"

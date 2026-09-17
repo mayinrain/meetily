@@ -50,6 +50,8 @@ pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
+pub mod meeting_speakers;
+pub mod live_speakers;
 pub mod summary;
 pub mod tray;
 pub mod utils;
@@ -610,6 +612,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            audio::transcription::sensevoice_provider::sensevoice_status,
             start_recording,
             stop_recording,
             is_recording,
@@ -732,6 +735,16 @@ pub fn run() {
             api::api_save_meeting_title,
             api::api_save_transcript,
             api::open_meeting_folder,
+            api::get_meeting_audio_path,
+            meeting_speakers::speaker_service_available,
+            live_speakers::get_recording_speakers,
+            meeting_speakers::start_meeting_speakers,
+            meeting_speakers::get_meeting_speakers,
+            meeting_speakers::cancel_meeting_speakers,
+            meeting_speakers::correct_meeting_speaker,
+            meeting_speakers::name_meeting_speaker,
+            api::export_meeting_transcript,
+            api::export_meeting_summary,
             api::test_backend_connection,
             api::debug_backend_connection,
             api::open_external_url,
@@ -817,6 +830,7 @@ pub fn run() {
             onboarding::save_onboarding_status_cmd,
             onboarding::reset_onboarding_status_cmd,
             onboarding::complete_onboarding,
+            onboarding::complete_sensevoice_onboarding,
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,

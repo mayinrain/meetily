@@ -1,0 +1,5 @@
+{
+  "name": "原句摘录",
+  "description": "本地模型选择原话，保留完整转写段和录音时间，可编辑校正；可能遗漏重点。",
+  "sections": [{"title": "原句摘录", "instruction": "选择完整原话范围，直接复制原始转写。", "format": "paragraph"}]
+}

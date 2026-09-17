@@ -111,6 +111,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
     }
     if (
       selectedDevices.systemDevice &&
+      selectedDevices.systemDevice !== 'disabled' &&
       outputs.length > 0 &&
       !outputs.some(d => `${d.name} (output)` === selectedDevices.systemDevice)
     ) {
@@ -399,6 +400,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="default">Default System Audio</SelectItem>
+              <SelectItem value="disabled">Do not record system audio</SelectItem>
               {outputDevices.map((device) => (
                 <SelectItem
                   key={device.name}

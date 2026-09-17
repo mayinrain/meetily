@@ -36,6 +36,8 @@ enum Request {
         repeat_penalty: Option<f32>,
         penalty_last_n: Option<i32>,
         stop_tokens: Option<Vec<String>>,
+        grammar: Option<String>,
+        seed: Option<u32>,
     },
     Ping,
     Shutdown,
@@ -326,11 +328,20 @@ impl ModelState {
 
         eprintln!("📥 Loading model: {}", model_path.display());
 
+        // Release the previous weights before changing model or context size.
+        self.model = None;
+        self.model_path = None;
+
         // Detect GPU layers
-        let gpu_layers = get_default_gpu_layers(&model_path, context_size);
+        let cpu_only = !cfg!(any(feature = "metal", feature = "cuda", feature = "vulkan"));
+        let gpu_layers = if cpu_only { 0 } else { get_default_gpu_layers(&model_path, context_size) };
+        eprintln!("Runtime profile: cpu_only={cpu_only}, gpu_layers={gpu_layers}, mmap={}", !cpu_only);
 
         // Configure model parameters with GPU offload
-        let model_params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
+        // On the 8 GB Windows CPU target, mmap plus weight repacking kept two
+        // representations resident. Direct loading avoids that extra mapping.
+        let model_params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers)
+            .with_use_mmap(!cpu_only);
         let model_params = pin!(model_params);
 
         let model = LlamaModel::load_from_file(&self.backend, model_path.clone(), &model_params)
@@ -351,9 +362,16 @@ impl ModelState {
         max_tokens: i32,
         sampling: SamplingConfig,
         stop_tokens: Vec<String>,
+        grammar: Option<&str>,
+        seed: Option<u32>,
     ) -> Result<String> {
+        use llama_cpp_2::sampling::LlamaSampler;
         let start_time = Instant::now();
         let model = self.model.as_ref().context("Model not loaded")?;
+        let grammar_sampler = grammar
+            .map(|grammar| LlamaSampler::grammar(model, grammar, "root"))
+            .transpose()
+            .context("Invalid output grammar")?;
 
         // Calculate thread count (conservative default: max(1, (Cores / 2) + 2))
         // This ensures the UI thread is never starved
@@ -364,11 +382,15 @@ impl ModelState {
             })
             .unwrap_or(2);
 
+        let cpu_only = !cfg!(any(feature = "metal", feature = "cuda", feature = "vulkan"));
+        let batch_size = if cpu_only { self.context_size.min(64) } else { self.context_size };
+        eprintln!("Context: size={}, batch={batch_size}, threads={threads}", self.context_size);
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(Some(
                 NonZeroU32::new(self.context_size).context("Invalid ctx size")?,
             ))
-            .with_n_batch(self.context_size)
+            .with_n_batch(batch_size)
+            .with_n_ubatch(batch_size.min(512))
             .with_n_threads(threads)
             .with_n_threads_batch(threads);
 
@@ -382,34 +404,36 @@ impl ModelState {
 
         eprintln!("📝 Tokenized prompt: {} tokens", tokens_list.len());
 
-        // Use context size for batch capacity to handle long prompts
-        let batch_size = self.context_size as usize;
-        let mut batch = LlamaBatch::new(batch_size, 1);
-
-        let last_index: i32 = (tokens_list.len() - 1) as i32;
-        for (i, token) in (0_i32..).zip(tokens_list.into_iter()) {
-            let is_last = i == last_index;
-            batch
-                .add(token, i, &[0], is_last)
-                .context("Failed to add token to batch")?;
+        if tokens_list.is_empty() || tokens_list.len() >= self.context_size as usize {
+            anyhow::bail!("Prompt must be nonempty and leave room for output in the context");
         }
+        let n_prompt_tokens = tokens_list.len() as i32;
+        let mut batch = LlamaBatch::new(batch_size as usize, 1);
 
-        ctx.decode(&mut batch).context("llama_decode() failed")?;
+        // Evaluate the whole prompt in bounded compute batches, preserving
+        // positions and the same context across every batch.
+        for (chunk_index, tokens) in tokens_list.chunks(batch_size as usize).enumerate() {
+            batch.clear();
+            for (index, &token) in tokens.iter().enumerate() {
+                let position = (chunk_index * batch_size as usize + index) as i32;
+                batch.add(token, position, &[0], position == n_prompt_tokens - 1)
+                    .context("Failed to add token to batch")?;
+            }
+            ctx.decode(&mut batch).context("llama_decode() failed")?;
+        }
         let prompt_time = start_time.elapsed();
 
-        let n_prompt_tokens = batch.n_tokens();
         let mut n_cur = n_prompt_tokens;
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut output = String::new();
 
         eprintln!("🔄 Starting generation (max_tokens: {})", max_tokens);
 
-        use llama_cpp_2::sampling::LlamaSampler;
-
-        let seed = SystemTime::now()
+        let seed = seed.unwrap_or_else(|| SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as u32;
+            .as_millis() as u32);
+        eprintln!("Sampling seed: {seed}");
         let sampler = if sampling.temperature <= 0.0 {
             if sampling.uses_penalties() {
                 LlamaSampler::chain_simple([
@@ -445,6 +469,10 @@ impl ModelState {
                 LlamaSampler::dist(seed),
             ])
         };
+        let sampler = match grammar_sampler {
+            Some(grammar) => LlamaSampler::chain_simple([grammar, sampler]),
+            None => sampler,
+        };
         let mut sampler = pin!(sampler);
 
         loop {
@@ -454,8 +482,8 @@ impl ModelState {
                 break;
             }
 
+            // sample() already accepts the token; accepting twice corrupts grammar state.
             let token = sampler.as_mut().sample(&ctx, batch.n_tokens() - 1);
-            sampler.as_mut().accept(token);
 
             if model.is_eog_token(token) {
                 eprintln!(
@@ -600,6 +628,8 @@ fn main() -> Result<()> {
                         repeat_penalty,
                         penalty_last_n,
                         stop_tokens,
+                        grammar,
+                        seed,
                     }) => {
                         let max_tokens = max_tokens.unwrap_or(512);
                         let context_size = context_size.unwrap_or(2048);
@@ -633,6 +663,8 @@ fn main() -> Result<()> {
                             max_tokens,
                             sampling,
                             stop_tokens,
+                            grammar.as_deref(),
+                            seed,
                         ) {
                             Ok(text) => {
                                 send_response(&Response::Response { text, error: None })?;
@@ -689,6 +721,7 @@ mod tests {
             frequency_penalty,
             repeat_penalty,
             penalty_last_n,
+            seed,
             ..
         } = request else {
             panic!("expected generate request");
@@ -709,11 +742,12 @@ mod tests {
         assert_eq!(sampling.repeat_penalty, 1.0);
         assert_eq!(sampling.penalty_last_n, 0);
         assert!(!sampling.uses_penalties());
+        assert_eq!(seed, None);
     }
 
     #[test]
     fn generate_request_deserializes_qwen_penalties() {
-        let json = r#"{"type":"generate","prompt":"summarize","temperature":0.5,"top_k":20,"top_p":0.8,"presence_penalty":0.3,"frequency_penalty":0.0,"repeat_penalty":1.05,"penalty_last_n":256}"#;
+        let json = r#"{"type":"generate","prompt":"summarize","temperature":0.5,"top_k":20,"top_p":0.8,"presence_penalty":0.3,"frequency_penalty":0.0,"repeat_penalty":1.05,"penalty_last_n":256,"seed":42}"#;
         let request: Request = serde_json::from_str(json).unwrap();
         let Request::Generate {
             temperature,
@@ -723,6 +757,7 @@ mod tests {
             frequency_penalty,
             repeat_penalty,
             penalty_last_n,
+            seed,
             ..
         } = request else {
             panic!("expected generate request");
@@ -746,5 +781,6 @@ mod tests {
         assert_eq!(sampling.repeat_penalty, 1.05);
         assert_eq!(sampling.penalty_last_n, 256);
         assert!(sampling.uses_penalties());
+        assert_eq!(seed, Some(42));
     }
 }

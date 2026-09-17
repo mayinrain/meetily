@@ -1,7 +1,8 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_store::StoreExt;
 
 use crate::{
@@ -977,11 +978,24 @@ pub async fn api_save_transcript<R: Runtime>(
         pool,
         &meeting_title,
         &transcripts_to_save,
-        folder_path,
+        folder_path.clone(),
     )
     .await
     {
         Ok(meeting_id) => {
+            if let Some(folder) = &folder_path {
+                let metadata_path = std::path::Path::new(folder).join("metadata.json");
+                let update = (|| -> anyhow::Result<()> {
+                    let mut metadata: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
+                    metadata["meeting_id"] = serde_json::json!(meeting_id);
+                    std::fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)?;
+                    Ok(())
+                })();
+                if let Err(e) = update {
+                    log_warn!("Meeting saved, but metadata ID update failed: {}", e);
+                }
+            }
             log_info!(
                 "Successfully saved transcript and created meeting with id: {}",
                 meeting_id
@@ -1001,6 +1015,75 @@ pub async fn api_save_transcript<R: Runtime>(
             Err(format!("Failed to save transcript: {}", e))
         }
     }
+}
+
+/// Authorize only this meeting's audio for the asset protocol's range requests.
+#[tauri::command]
+pub async fn get_meeting_audio_path<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<Option<String>, String> {
+    let meeting = MeetingsRepository::get_meeting_metadata(state.db_manager.pool(), &meeting_id)
+        .await.map_err(|e| e.to_string())?
+        .ok_or_else(|| "Meeting not found".to_string())?;
+    let Some(folder) = meeting.folder_path else { return Ok(None) };
+    let path = std::path::Path::new(&folder).join("audio.mp4");
+    if !path.is_file() { return Ok(None) }
+    app.asset_protocol_scope().allow_file(&path).map_err(|e| e.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub async fn export_meeting_transcript<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<Option<String>, String> {
+    let mut meeting = MeetingsRepository::get_meeting(state.db_manager.pool(), &meeting_id)
+        .await.map_err(|e| e.to_string())?
+        .ok_or_else(|| "Meeting not found".to_string())?;
+    meeting.transcripts.sort_by(|a, b| a.audio_start_time.partial_cmp(&b.audio_start_time)
+        .unwrap_or(std::cmp::Ordering::Equal).then(a.timestamp.cmp(&b.timestamp)));
+    let speaker_labels = crate::meeting_speakers::labels_for_export(&state, &meeting_id).await?;
+    let mut text = format!("# {}\n\nMeeting ID: {}\nDate: {}\n\n", meeting.title, meeting.id, meeting.created_at);
+    for segment in &meeting.transcripts {
+        let timestamp = match segment.audio_start_time {
+            Some(seconds) => {
+                let seconds = seconds.max(0.0) as u64;
+                format!("[{:02}:{:02}]", seconds / 60, seconds % 60)
+            }
+            None => segment.timestamp.clone(),
+        };
+        let label = speaker_labels.get(&segment.id).map(|s| format!("[{s}] ")).unwrap_or_default();
+        text.push_str(&format!("{} {}{}\n", timestamp, label, segment.text));
+    }
+    let Some(file) = app.dialog().file().set_file_name("transcript.txt")
+        .add_filter("Text", &["txt"]).blocking_save_file() else { return Ok(None) };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    log_info!("Exported {} transcript segments to {}", meeting.transcripts.len(), path.display());
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// Export the current editor content with a native Save dialog.
+#[tauri::command]
+pub async fn export_meeting_summary<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    markdown: String,
+) -> Result<Option<String>, String> {
+    if markdown.trim().is_empty() { return Err("没有可导出的纪要".into()); }
+    let meeting = MeetingsRepository::get_meeting_metadata(state.db_manager.pool(), &meeting_id)
+        .await.map_err(|e| e.to_string())?.ok_or("Meeting not found")?;
+    let Some(file) = app.dialog().file().set_file_name("summary.md")
+        .add_filter("Markdown", &["md"]).blocking_save_file() else { return Ok(None) };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, format!("# {}\n\n{}\n\n{}", meeting.title, meeting.created_at.0.to_rfc3339(), markdown))
+        .map_err(|e| e.to_string())?;
+    log_info!("Exported meeting summary {} to {}", meeting_id, path.display());
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 /// Opens the meeting's recording folder in the system file explorer

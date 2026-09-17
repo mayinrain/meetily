@@ -137,6 +137,27 @@ pub async fn generate_with_builtin(
     user_prompt: &str,
     cancellation_token: Option<&CancellationToken>,
 ) -> Result<String> {
+    generate_local(app_data_dir, model_name, system_prompt, user_prompt, cancellation_token, false).await
+}
+
+pub(crate) async fn generate_for_excerpts(
+    app_data_dir: &PathBuf,
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<String> {
+    generate_local(app_data_dir, model_name, system_prompt, user_prompt, cancellation_token, true).await
+}
+
+async fn generate_local(
+    app_data_dir: &PathBuf,
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    cancellation_token: Option<&CancellationToken>,
+    source_excerpts: bool,
+) -> Result<String> {
     // Check cancellation at start
     if let Some(token) = cancellation_token {
         if token.is_cancelled() {
@@ -148,8 +169,15 @@ pub async fn generate_with_builtin(
     log::info!("Model: {}", model_name);
 
     // Get model definition
-    let model_def = models::get_model_by_name(model_name)
+    let mut model_def = models::get_model_by_name(model_name)
         .ok_or_else(|| anyhow!("Unknown model: {}", model_name))?;
+
+    if source_excerpts {
+        model_def.context_size = 6144;
+        model_def.sampling = models::SamplingParams::tight_structured(model_def.sampling.stop_tokens);
+        model_def.sampling.temperature = 0.3;
+        model_def.sampling.top_p = 0.8;
+    }
 
     // Resolve model path with caching (avoids repeated filesystem I/O)
     let model_path = get_cached_model_path(app_data_dir, model_name)?;
@@ -182,7 +210,7 @@ pub async fn generate_with_builtin(
     let sampling = model_def.sampling.sanitize_for_llama_helper();
     let request = Request::Generate {
         prompt: formatted_prompt,
-        max_tokens: Some(models::DEFAULT_MAX_TOKENS),
+        max_tokens: Some(if source_excerpts { 512 } else { models::DEFAULT_MAX_TOKENS }),
         context_size: Some(model_def.context_size),
         model_path: Some(model_path.to_string_lossy().to_string()),
         temperature: Some(sampling.temperature),
@@ -246,42 +274,28 @@ pub async fn generate_with_builtin(
 }
 
 /// Shutdown the global sidecar (graceful cleanup)
-/// Detaches the current manager and spawns a background task to drain active requests
+/// Waits for outstanding requests and process exit before detaching the manager.
 pub async fn shutdown_sidecar_gracefully() -> Result<()> {
-    let manager_opt = {
-        let mut global_manager = SIDECAR_MANAGER.lock().await;
-        global_manager.take()
-    };
-
-    if let Some(manager) = manager_opt {
-        log::info!("Detaching sidecar manager for graceful shutdown");
-
-        // Spawn background task to wait for active requests and then kill
-        tokio::spawn(async move {
-            if let Err(e) = manager.shutdown_gracefully().await {
-                log::error!("Error during graceful shutdown: {}", e);
-            }
-        });
+    let mut global_manager = SIDECAR_MANAGER.lock().await;
+    if let Some(manager) = global_manager.as_ref() {
+        log::info!("Waiting for sidecar manager to shut down gracefully");
+        manager.shutdown_gracefully().await?;
     }
-
+    *global_manager = None;
     Ok(())
 }
 
-/// Force shutdown the global sidecar (for app exit)
+/// Stop the global sidecar and wait for release (summary completion or app exit).
 /// Directly kills the process without waiting for active requests to complete.
 /// This is synchronous and blocks until the sidecar is terminated.
 pub async fn force_shutdown_sidecar() -> Result<()> {
-    let manager_opt = {
-        let mut global_manager = SIDECAR_MANAGER.lock().await;
-        global_manager.take()
-    };
-
-    if let Some(manager) = manager_opt {
-        log::info!("Force shutting down sidecar for app exit");
+    let mut global_manager = SIDECAR_MANAGER.lock().await;
+    if let Some(manager) = global_manager.as_ref() {
+        log::info!("Stopping local summary sidecar and waiting for release");
         // Call shutdown() directly - sends shutdown command and force kills after 3s
         manager.shutdown().await?;
     }
-
+    *global_manager = None;
     Ok(())
 }
 
