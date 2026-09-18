@@ -1,3 +1,5 @@
+> 本分支的离线 SenseVoice + Pyannote Community-1 服务已纳入仓库。环境、模型准备、启动和测试见 [speech-service/README.md](speech-service/README.md)。模型权重与会议数据需单独准备。
+
 <div align="center" style="border-bottom: none">
     <h1>
         <img src="docs/Meetily-6.png" style="border-radius: 10px;" />

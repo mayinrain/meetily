@@ -1,0 +1,11 @@
+# Dedicated Community-1 worker environment; do not install into the ASR service.
+# Install torch/torchaudio first from https://download.pytorch.org/whl/cpu.
+torch==2.9.1
+torchaudio==2.9.1
+torchcodec==0.9.1
+pyannote.audio==4.0.7
+# Shared Run resource logger and the existing DER scorer import core.py.
+sherpa-onnx==1.13.8
+numpy==2.5.3
+scipy==1.18.1
+psutil==7.2.2

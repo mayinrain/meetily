@@ -77,3 +77,13 @@ experiments/
 target/
 
 frontend/src-tauri/binaries/
+
+# Offline speech service: keep environments, weights and meeting data local.
+**/.venv*/
+**/__pycache__/
+**/.pytest_cache/
+*.py[cod]
+/shared/
+/runs/
+/speech-service/runs/
+/tools/ffmpeg.exe
