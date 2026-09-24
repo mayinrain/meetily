@@ -163,7 +163,7 @@ pub fn attach_folder(job_id: &str, folder: &Path) -> Result<(), String> {
 pub fn status(job_id: &str) -> Option<Value> {
     SESSIONS.lock().unwrap().get(job_id).map(|session| {
         let value = read(&session.directory.join("state.json")).unwrap_or(json!({"status":"starting"}));
-        json!({"status":value["status"],"completed_batches":value["completed_batches"].as_u64().unwrap_or(0),
+        json!({"status":value["status"],"workflow":value["workflow"],"completed_batches":value["completed_batches"].as_u64().unwrap_or(0),
             "queued_batches":value["queued_batches"].as_u64().unwrap_or(0),
             "failed_batches":value["failed_batches"].as_u64().unwrap_or(0), "error":value["error"],
             "phase":value["phase"],"completed_notes":value["notes"].as_array().map_or(0,Vec::len),

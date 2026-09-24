@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { runLive, writeJson } from '../frontend/src-tauri/resources/summary-workflow/live.mjs';
 import { sourceRows } from '../frontend/src-tauri/resources/summary-workflow/round.mjs';
@@ -20,7 +21,17 @@ writeJson(path.join(directory, 'validation-mode.json'), { mode: 'accelerated-rec
   source_sha256: createHash('sha256').update(raw).digest('hex'), segments: rows.length,
   excluded: ['ASR', 'VAD', 'diarization', 'microphone', 'real-time backlog', 'desktop save'] });
 const controller = new AbortController(), began = Date.now();
-const running = runLive(directory, { signal: controller.signal });
+// macOS os.freemem excludes reclaimable pages; match the native host's available-memory metric.
+let measuredAt = 0, available;
+const freeMemory = process.env.MEETILY_BENCH_PYTHON ? () => {
+  if (Date.now() - measuredAt > 1000) {
+    available = Number(execFileSync(process.env.MEETILY_BENCH_PYTHON,
+      ['-c', 'import psutil; print(psutil.virtual_memory().available)'], { encoding: 'utf8', timeout: 5000 }).trim());
+    measuredAt = Date.now();
+  }
+  return available;
+} : undefined;
+const running = runLive(directory, { signal: controller.signal, ...(freeMemory ? { freeMemory } : {}) });
 let lastNotes = -1;
 try {
   while (true) {
