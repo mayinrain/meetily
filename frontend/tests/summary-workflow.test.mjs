@@ -42,8 +42,21 @@ async function harness(t, outputs, delay = 0) {
   const state = () => JSON.parse(fs.readFileSync(path.join(directory, 'state.json')));
   const run = options => runLive(directory, { modelFactory, pollMs: 10,
     freeMemory: () => 2 ** 32, ...options });
-  return { directory, requests, run, send, state, maximum: () => maximum, stops: () => stops };
+  return { directory, requests, run, send, state, base: `http://127.0.0.1:${server.address().port}`,
+    maximum: () => maximum, stops: () => stops };
 }
+
+test('slow non-streaming generation is governed by the application deadline', async t => {
+  const h = await harness(t, [{ text: note() }], 2000);
+  // Accelerate HTTP-client timers; the server delay and AbortSignal deadline stay real.
+  // This reproduces fetch's independent 300-second headers timeout in under two seconds.
+  const realSetTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => realSetTimeout(fn, Math.min(ms, 1), ...args));
+  const signal = AbortSignal.timeout(600000);
+  const generator = createGenerator({ base: h.base, directory: h.directory, writeJson, log: () => {}, signal });
+  assert.equal(await generator.generate('recording_note', '整理会议', '讨论住宿', 1280), note());
+  assert.equal(signal.aborted, false);
+});
 
 
 const note = (label = '本段') => `## 内容概览\n${label}讨论预算和推进安排。\n## 主要讨论\n- ${label}提出先试点再扩展。\n## 结论\n未提及\n## 明确待办\n- [ ] 提供报价。\n## 未决问题\n- 预算待确认。`;

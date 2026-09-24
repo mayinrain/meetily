@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import http from 'node:http';
 
 export function createGenerator({ base, directory, writeJson, log, signal }) {
   const calls = path.join(directory, 'calls'); fs.mkdirSync(calls, { recursive: true });
@@ -13,10 +14,21 @@ export function createGenerator({ base, directory, writeJson, log, signal }) {
     min_p: 0, repeat_penalty: 1, presence_penalty: 0, repeat_last_n: 64, seed: 42,
     chat_template_kwargs: { enable_thinking: false } });
   async function post(endpoint, body, requestSignal = signal) {
-    const response = await fetch(base + endpoint, { method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: requestSignal });
-    if (!response.ok) throw new Error(`${endpoint}: HTTP ${response.status}`);
-    return response.json();
+    // Local non-streaming inference can take over 300 seconds. Native fetch has
+    // a separate headers deadline that fires before our 600-second AbortSignal.
+    const response = await new Promise((resolve, reject) => {
+      const request = http.request(base + endpoint, { method: 'POST', agent: false,
+        headers: { 'Content-Type': 'application/json' }, signal: requestSignal }, resolve);
+      request.on('error', reject);
+      request.end(JSON.stringify(body));
+    });
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      response.resume();
+      throw new Error(`${endpoint}: HTTP ${response.statusCode}`);
+    }
+    const chunks = [];
+    for await (const chunk of response) chunks.push(chunk);
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   }
   async function measure(system, user, maxTokens, requestSignal) {
     const rendered = await post('/apply-template', payload(system, user, maxTokens), requestSignal);
