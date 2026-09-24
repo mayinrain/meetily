@@ -3,8 +3,12 @@ import path from 'node:path';
 import os from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
-import { emptyStore, sourceRows, runRound, renderFacts } from './round.mjs';
+import { sourceRows } from './round.mjs';
 import { startModel } from './runtime.mjs';
+import { createGenerator } from './generation.mjs';
+import { sections, planChunk, slices, formatSources, chunkTokens, sectionTokens, directTokens,
+  chunkSystem, directSystem, chunkPrompt, sectionPrompt, sectionMaterials,
+  renderNotes, renderSections, extractSections, splitMaterial, reduceSection } from './sections.mjs';
 
 export function writeJson(file, value) {
   const temporary = file + '.tmp';
@@ -53,24 +57,36 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
     const file = path.join(directory, 'memory.json');
     return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).available_bytes : os.freemem();
   },
-    drainMs = 120000, pollMs = 250 } = {}) {
+    drainMs = 1200000, pollMs = 250 } = {}) {
   const began = Date.now(), abort = new AbortController();
   const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
-  const state = { workflow: 'fixed-facts-v1', model: 'qwen3.5:4b', status: 'recording',
-    facts: emptyStore(), batches: [], source_segments: [], completed_batches: 0,
+  const state = { workflow: 'section-notes-v1', model: 'qwen3.5:4b', status: 'recording', phase: 'collecting',
+    notes: [], cursor: 0, final_sections: {}, batches: [], source_segments: [], completed_batches: 0,
     queued_batches: 0, failed_batches: 0, maximum_queued_batches: 0, recording_active: true,
-    minimum_available_bytes: null, stopped_at: null, observed_segments: 0, semantic_quality_verified: false };
-  let desired = [], finalInput = false, model, active = false, lastInbox = '', maximumPublished = 0;
+    minimum_available_bytes: null, stopped_at: null, observed_segments: 0, semantic_quality_verified: false,
+    post_stop_target_seconds: 120, maximum_pending_characters: 0, final_report_complete: false };
+  let desired = [], rows = [], finalInput = false, model, generator, active = false, lastInbox = '', maximumPublished = 0;
+  let activeChunk, chunkFailureAt = -1;
   const events = path.join(directory, 'events.jsonl');
   const log = (type, data = {}) => fs.appendFileSync(events, JSON.stringify({ elapsed_s: (Date.now() - began) / 1000, type, ...data }) + '\n');
   const persist = () => {
+    let chars = 0, completeRows = 0;
+    for (const row of rows) { chars += row.text.length; if (chars <= state.cursor) completeRows++; }
+    let batchEnd = 0;
+    for (const batch of desired) {
+      batchEnd += batch.segments.reduce((sum, row) => sum + row.text.length, 0);
+      if (batchEnd <= state.cursor && !state.batches[batch.batch_id]) state.batches.push({
+        source: batch, status: 'saved', completed_during_recording: state.recording_active });
+    }
+    state.completed_batches = state.batches.length;
     state.queued_batches = Math.max(0, desired.length - state.batches.length);
     state.maximum_queued_batches = Math.max(state.maximum_queued_batches, state.queued_batches);
-    state.pending_batches = state.queued_batches + state.failed_batches;
-    state.unsaved_segments = state.observed_segments - state.batches.filter(b => b.status === 'saved')
-      .reduce((n, b) => n + b.source.segments.length, 0);
+    state.pending_batches = state.queued_batches;
+    state.unsaved_segments = Math.max(0, state.observed_segments - completeRows);
+    state.pending_characters = Math.max(0, chars - state.cursor);
+    state.maximum_pending_characters = Math.max(state.maximum_pending_characters, state.pending_characters);
     state.active = active;
-    state.markdown = renderFacts(state.facts);
+    if (!state.final_report_complete) state.markdown = renderNotes(state.notes);
     writeJson(path.join(directory, 'state.json'), state);
   };
   const poll = () => {
@@ -85,14 +101,18 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
         if (raw !== lastInbox) {
           const snapshot = JSON.parse(raw);
           desired = validateSnapshot(desired, snapshot);
+          rows = desired.flatMap(sourceRows);
           state.source_segments = snapshot.result?.source_segments || [];
           state.observed_segments = (snapshot.transcript_segments || state.source_segments).length;
           finalInput = snapshot.status === 'completed';
           if (snapshot.recording_stopped_at && !state.stopped_at) {
             state.stopped_at = snapshot.recording_stopped_at;
             state.recording_active = false;
-            state.unsaved_segments_at_stop = state.observed_segments - state.batches
-              .filter(b => b.status === 'saved').reduce((n, b) => n + b.source.segments.length, 0);
+            let end = 0;
+            const savedRows = rows.filter(row => { end += row.text.length; return end <= state.cursor; }).length;
+            state.unsaved_segments_at_stop = Math.max(0, state.observed_segments - savedRows);
+            // Finish owns the uncommitted tail. Do not wait for or commit a late recording note.
+            activeChunk?.abort(new Error('Recording ended; final summary takes over the tail'));
             log('recording_stopped', { unsaved_segments: state.unsaved_segments_at_stop });
           }
           if (desired.length > maximumPublished) {
@@ -102,51 +122,103 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
           lastInbox = raw;
         }
       }
-      if (state.stopped_at && Date.now() - state.stopped_at >= drainMs) throw new Error('Summary drain exceeded 120 seconds');
+      if (state.stopped_at && Date.now() - state.stopped_at >= drainMs)
+        throw new Error(`Summary exceeded experiment limit (${drainMs / 1000} seconds)`);
       persist();
     } catch (error) { abort.abort(error); }
   };
   persist(); poll();
   const timer = setInterval(poll, pollMs);
+  async function ensureModel() {
+    if (!model) {
+      model = await modelFactory(directory, combined);
+      generator = createGenerator({ base: model.base, directory, writeJson, log, signal: combined });
+    }
+  }
+  async function generate(stage, system, user, tokens, signal = combined) {
+    await ensureModel();
+    active = true; state.phase = stage; persist();
+    try { return await generator.generate(stage, system, user, tokens,
+      AbortSignal.any([signal, AbortSignal.timeout(600000)])); }
+    finally { active = false; persist(); }
+  }
+  function saveNote(content, start, end, elapsed, duringRecording) {
+    state.notes.push({ content, start, end, elapsed_s: elapsed,
+      completed_during_recording: duringRecording,
+      sources: slices(rows, start, end).map(r => ({ id: r.id, from: r.from, to: r.to })) });
+    state.cursor = end; persist();
+    log('note_saved', { index: state.notes.length - 1, start, end, during_recording: duringRecording });
+  }
   try {
     while (true) {
       combined.throwIfAborted();
-      const batch = desired[state.batches.length];
-      if (!batch) {
-        if (finalInput) break;
+      if (finalInput) break;
+      const chunk = state.recording_active && chunkFailureAt !== state.cursor ? planChunk(rows, state.cursor) : null;
+      if (!chunk) {
         await sleep(pollMs, undefined, { signal: combined });
         continue;
       }
-      if (!model) model = await modelFactory(directory, combined);
-      const started = Date.now(); active = true; persist();
-      const index = batch.batch_id;
-      const rows = sourceRows(batch), previous = desired.slice(0, index).flatMap(sourceRows).slice(-2);
-      const record = { source: batch, status: 'failed' };
-      log('round_started', { batch_id: index });
+      const started = Date.now(); activeChunk = new AbortController();
       try {
-        const next = await runRound({ base: model.base, store: state.facts, batch: rows, previous,
-          signal: AbortSignal.any([combined, AbortSignal.timeout(300000)]),
-          log: (type, data) => log(type, { batch_id: index, ...data }) });
+        const content = await generate('recording_note', chunkSystem, chunkPrompt(chunk.material, chunk.buffer),
+          chunkTokens, AbortSignal.any([combined, activeChunk.signal]));
         combined.throwIfAborted();
-        state.facts = next; record.status = 'saved'; state.completed_batches++;
+        activeChunk.signal.throwIfAborted();
+        saveNote(content, chunk.start, chunk.end, (Date.now() - started) / 1000, true);
       } catch (error) {
-        record.error = String(error); state.failed_batches++;
-        log('round_failed', { batch_id: index, error: record.error });
-      }
-      record.elapsed_s = (Date.now() - started) / 1000;
-      record.completed_during_recording = state.recording_active;
-      state.batches.push(record); active = false; persist();
-      log('round_finished', { batch_id: index, status: record.status, duration_s: record.elapsed_s });
+        combined.throwIfAborted();
+        if (!activeChunk.signal.aborted) {
+          // A failed chunk never advances the cursor. Finalization still sees its full source.
+          chunkFailureAt = state.cursor;
+          state.recording_note_failures = (state.recording_note_failures || 0) + 1;
+          log('note_failed', { cursor: state.cursor, error: String(error) });
+        }
+      } finally { activeChunk = null; }
     }
-    state.status = state.failed_batches ? 'failed' : 'ready';
-    if (state.failed_batches) state.error = `${state.failed_batches} batches were not saved; partial draft is preserved`;
+    const total = rows.reduce((sum, row) => sum + row.text.length, 0);
+    state.finalization_started_at = Date.now();
+    if (!rows.length) {
+      state.markdown = renderSections(new Map()); state.route = 'empty';
+    } else if (state.notes.length < 2 || formatSources(rows).length <= 1200) {
+      state.route = 'direct';
+      const content = await generate('direct_final', directSystem,
+        `<完整会议转写>\n${formatSources(rows)}\n</完整会议转写>`, directTokens);
+      const parsed = extractSections(content);
+      if (!parsed.size) parsed.set(sections[0], content);
+      state.markdown = renderSections(parsed); state.cursor = total;
+    } else {
+      state.route = 'section_wise'; await ensureModel();
+      const tailStart = state.cursor, tail = formatSources(slices(rows, tailStart));
+      if (tail) {
+        const parts = await splitMaterial(tail, part => generator.fits(chunkSystem, chunkPrompt(part), chunkTokens));
+        const contents = [], started = Date.now();
+        for (const part of parts) contents.push(await generate('tail_note', chunkSystem, chunkPrompt(part), chunkTokens));
+        // The tail cursor is committed only after every part succeeded; per-call checkpoints allow reuse.
+        for (const content of contents) state.notes.push({ content, start: tailStart, end: total,
+          completed_during_recording: false, elapsed_s: (Date.now() - started) / 1000, tail_part: true });
+        state.cursor = total; persist();
+      }
+      const materials = sectionMaterials(state.notes), final = new Map();
+      for (const section of sections) {
+        const material = materials.get(section).join('\n\n');
+        let content = '未提及';
+        if (material) content = await reduceSection(material,
+          part => { const p = sectionPrompt(section, part); return generator.fits(p.system, p.user, sectionTokens); },
+          part => { const p = sectionPrompt(section, part); return generate(`section:${section}`, p.system, p.user, sectionTokens); });
+        final.set(section, content); state.final_sections[section] = content; persist();
+      }
+      state.markdown = renderSections(final);
+    }
+    combined.throwIfAborted();
+    state.final_report_complete = true; state.status = 'ready'; state.phase = 'complete';
   } catch (error) {
-    state.status = 'failed'; state.error = String(abort.signal.reason || error);
+    state.status = 'failed'; state.error = String(abort.signal.reason || error); state.failed_batches++;
   } finally {
     clearInterval(timer);
     if (model) await model.stop();
     active = false;
     state.settled_seconds_after_stop = state.stopped_at ? (Date.now() - state.stopped_at) / 1000 : null;
+    state.within_post_stop_target = state.status === 'ready' && state.settled_seconds_after_stop !== null && state.settled_seconds_after_stop <= 120;
     state.worker_elapsed_s = (Date.now() - began) / 1000;
     persist(); log('finished', { status: state.status, error: state.error });
   }

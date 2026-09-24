@@ -1,4 +1,4 @@
-//! Connect immutable speaker batches to the fixed-fact workflow, then save its report.
+//! Connect immutable speaker batches to chunk notes and section-wise final summaries.
 use std::{collections::HashMap, path::{Path, PathBuf}, process::Stdio,
     sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use serde_json::{json, Value};
@@ -9,6 +9,7 @@ use crate::database::repositories::{meeting::MeetingsRepository, setting::Settin
     summary::SummaryProcessesRepository};
 
 const MODEL: &str = "qwen3.5:4b";
+const WORKFLOW: &str = "section-notes-v1";
 struct Session {
     directory: PathBuf, alive: Arc<AtomicBool>, stopped_at: Option<i64>, snapshot: Value,
     // Closing stdin on application exit also stops the worker and its model child.
@@ -83,7 +84,8 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -
         }; }
         for (name, source) in [source!("live.mjs"), source!("round.mjs"), source!("runtime.mjs"),
             source!("prompt.mjs"), source!("facts.mjs"), source!("text-facts.mjs"),
-            source!("workflow-submissions.mjs"), source!("relevant-memory.mjs")] {
+            source!("workflow-submissions.mjs"), source!("relevant-memory.mjs"),
+            source!("sections.mjs"), source!("generation.mjs")] {
             std::fs::write(directory.join("runtime").join(name), source).map_err(|e| e.to_string())?;
         }
         // Release any idle built-in summary model before reserving this recording's model.
@@ -153,7 +155,7 @@ pub fn recording_stopped(job_id: &str) {
 }
 pub fn attach_folder(job_id: &str, folder: &Path) -> Result<(), String> {
     if let Some(session) = SESSIONS.lock().unwrap().get(job_id) {
-        write(&folder.join("summary-live.json"), &json!({"job_id":job_id,"workflow":"fixed-facts-v1",
+        write(&folder.join("summary-live.json"), &json!({"job_id":job_id,"workflow":WORKFLOW,
             "run_directory":session.directory}))?;
     }
     Ok(())
@@ -163,7 +165,9 @@ pub fn status(job_id: &str) -> Option<Value> {
         let value = read(&session.directory.join("state.json")).unwrap_or(json!({"status":"starting"}));
         json!({"status":value["status"],"completed_batches":value["completed_batches"].as_u64().unwrap_or(0),
             "queued_batches":value["queued_batches"].as_u64().unwrap_or(0),
-            "failed_batches":value["failed_batches"].as_u64().unwrap_or(0), "error":value["error"]})
+            "failed_batches":value["failed_batches"].as_u64().unwrap_or(0), "error":value["error"],
+            "phase":value["phase"],"completed_notes":value["notes"].as_array().map_or(0,Vec::len),
+            "pending_characters":value["pending_characters"]})
     })
 }
 pub fn cancel(job_id: &str) {
@@ -194,7 +198,7 @@ async fn manifest(pool: &SqlitePool, meeting_id: &str) -> Result<Option<Value>, 
     let path = Path::new(&folder).join("summary-live.json");
     if !path.is_file() { return Ok(None); }
     let value = read(&path)?;
-    Ok((value["workflow"] == "fixed-facts-v1").then_some(value))
+    Ok(matches!(value["workflow"].as_str(), Some("fixed-facts-v1" | "section-notes-v1")).then_some(value))
 }
 
 pub async fn cancel_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<(), String> {
@@ -235,7 +239,8 @@ async fn save_report(pool: &SqlitePool, meeting_id: &str, started: chrono::DateT
     validate_sources(&rows, &value["source_segments"])?;
     let markdown = value["markdown"].as_str().filter(|s| !s.trim().is_empty()).ok_or("Missing report")?;
     SummaryProcessesRepository::update_process_completed(pool, meeting_id, started,
-        json!({"markdown":markdown,"workflow":"fixed-facts-v1","semantic_quality_verified":false}),
+        json!({"markdown":markdown,"workflow":value["workflow"],"semantic_quality_verified":false,
+            "within_post_stop_target":value["within_post_stop_target"]}),
         value["completed_batches"].as_i64().unwrap_or(0),
         value["settled_seconds_after_stop"].as_f64().unwrap_or(0.0)).await.map_err(|e| e.to_string())?;
     Ok(())
@@ -258,7 +263,10 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
     let cancellation = super::service::SummaryService::register_cancellation_token(&meeting_id, started);
     tokio::spawn(async move {
         let result: Result<(), String> = async {
-            let deadline = tokio::time::Instant::now()+Duration::from_secs(125);
+            // Experimental section close is allowed to finish so its real cost can be measured.
+            // The worker reports the original 120-second target separately from this hard limit.
+            let limit = if manifest["workflow"] == WORKFLOW { 1205 } else { 125 };
+            let deadline = tokio::time::Instant::now()+Duration::from_secs(limit);
             loop {
                 if cancellation.is_cancelled() { cancel(&job_id); return Err("Summary generation cancelled".into()); }
                 let process = SummaryProcessesRepository::get_summary_data(&pool, &meeting_id).await.map_err(|e| e.to_string())?;
@@ -340,7 +348,7 @@ mod tests {
             .bind(started).bind(started).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO transcripts (id,meeting_id,transcript,timestamp,audio_start_time,audio_end_time,duration) VALUES ('database-id','meeting','小林提交周报','00:00',0,20,20)")
             .execute(&pool).await.unwrap();
-        let value = json!({"status":"ready","markdown":"## 行动\n- 小林提交周报。",
+        let value = json!({"status":"ready","workflow":WORKFLOW,"within_post_stop_target":true,"markdown":"## 明确待办\n- 小林提交周报。",
             "source_segments":[{"id":"live-id","text":"小林提交周报","audio_start_time":0,"audio_end_time":20}],
             "completed_batches":1,"settled_seconds_after_stop":1.5});
         SummaryProcessesRepository::create_or_reset_process(&pool,"meeting",started).await.unwrap();
@@ -353,6 +361,8 @@ mod tests {
         assert_eq!(saved.status,"completed");
         let report: Value = serde_json::from_str(&saved.result.unwrap()).unwrap();
         assert_eq!(report["markdown"],value["markdown"]);
+        assert_eq!(report["workflow"],WORKFLOW);
+        assert_eq!(report["within_post_stop_target"],true);
         assert_eq!(saved.chunk_count,1);
         sqlx::query("UPDATE transcripts SET transcript='人工修改' WHERE id='database-id'")
             .execute(&pool).await.unwrap();

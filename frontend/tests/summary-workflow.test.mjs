@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { planChunk, slices, formatSources, splitMaterial, reduceSection } from '../src-tauri/resources/summary-workflow/sections.mjs';
+import { createGenerator } from '../src-tauri/resources/summary-workflow/generation.mjs';
 import { runLive, validateSnapshot, writeJson } from '../src-tauri/resources/summary-workflow/live.mjs';
 
 const row = (id, text, start = 0, end = 20) => ({ id, text, audio_start_time: start,
@@ -27,10 +29,10 @@ async function harness(t, outputs, delay = 0) {
     if (req.url === '/apply-template') return res.end(JSON.stringify({ prompt: 'rendered' }));
     if (req.url === '/tokenize') return res.end(JSON.stringify({ tokens: [1, 2] }));
     requests.push(body); active++; maximum = Math.max(maximum, active);
-    const output = outputs[requests.length - 1];
+    const output = typeof outputs === 'function' ? outputs(body, requests.length) : outputs[requests.length - 1];
     await sleep(delay); active--;
     res.end(JSON.stringify({ usage: { prompt_tokens: 2 }, choices: [{ finish_reason: output?.finish || 'stop',
-      message: { content: output?.text || '无新增' } }] }));
+      message: { content: output?.text || '## 内容概览\n讨论会议安排。' } }] }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
@@ -43,95 +45,155 @@ async function harness(t, outputs, delay = 0) {
   return { directory, requests, run, send, state, maximum: () => maximum, stops: () => stops };
 }
 
-test('live arrivals queue behind one request; revisions and tail persist without a final model rewrite', async t => {
-  const h = await harness(t, [{ text: '## 行动\n- 小林周五提交周报。' },
-    { text: '## 修订\n- 已有 F0001：小林改为下周一上午十点提交周报。' },
-    { text: '## 待确认\n- 预算两万元待批准。' }], 70);
-  const first = batch(0, [row('a', '小林周五提交周报。')]);
-  h.send(snapshot([first])); const running = h.run();
-  await until(() => h.requests.length === 1);
-  const second = batch(1, [row('b', '周报改为下周一上午十点提交，小林负责。', 20, 40)]);
-  const tail = batch(2, [row('c', '两万元预算还没有批准。', 40, 45)]);
-  h.send(snapshot([first, second, tail], true));
-  const state = await running;
-  assert.equal(state.status, 'ready'); assert.equal(state.completed_batches, 3);
-  assert.equal(h.maximum(), 1); assert.equal(h.stops(), 1); assert.equal(h.requests.length, 3);
-  assert.equal(state.facts.facts.length, 2); assert.equal(state.facts.facts[0].id, 'F0001');
-  assert.match(state.markdown, /下周一上午十点/); assert.doesNotMatch(state.markdown, /F0001|\[a\]|周五/);
-  assert.ok(state.maximum_queued_batches >= 3); assert.equal(state.pending_batches, 0);
-  const firstPrompt = h.requests[0].messages[1].content[0].text;
-  assert.doesNotMatch(firstPrompt, /预算|下周一/);
-  assert.match(h.requests[1].messages[1].content[0].text, /F0001/);
-  assert.equal(h.state().markdown, state.markdown);
+
+const note = (label = '本段') => `## 内容概览\n${label}讨论预算和推进安排。\n## 主要讨论\n- ${label}提出先试点再扩展。\n## 结论\n未提及\n## 明确待办\n- [ ] 提供报价。\n## 未决问题\n- 预算待确认。`;
+const long = label => `${label}预算为两万元，先试点再扩展。`.repeat(85);
+
+test('character chunks preserve full sentences, readable labels, offsets and overlap', () => {
+  const rows = [{ id: 'a', text: '甲'.repeat(1194) + '预算3.5万元。尾句完整。', speakers: [1] }];
+  const first = planChunk(rows, 0);
+  assert.ok(first.material.endsWith('预算3.5万元。'));
+  assert.equal(first.buffer, '');
+  assert.equal(first.end, rows[0].text.indexOf('尾句'));
+  assert.equal(slices(rows, first.end).map(r => r.text).join(''), '尾句完整。');
+  const expanded = [...rows, { id: 'b', text: long('乙'), speakers: [2] }];
+  const second = planChunk(expanded, first.end);
+  assert.equal(second.buffer, formatSources(slices(expanded, first.end - 300, first.end)));
+  assert.match(second.material, /尾句完整/);
+  assert.equal(planChunk([{ text: '短会。', speakers: [1] }], 0), null);
+  const unpunctuated = [{ text: '甲'.repeat(1300), speakers: [1] }];
+  assert.equal(planChunk(unpunctuated, 0).end, 1300);
 });
 
-test('a 20-second meeting immediately flushes one uncertain-speaker batch', async t => {
-  const h = await harness(t, [{ text: '## 讨论\n- 讨论住房方案。' }]);
-  const source = row('short', '讨论住房方案。'); source.speaker_ids = [1, 2]; source.needs_review = true;
+test('20-second meetings use complete source directly, not an empty incremental fact patch', async t => {
+  const h = await harness(t, [{ text: note() }]);
+  const source = row('short', '扩建住房，新增人员需要住宿。'); source.speaker_ids = [1, 2]; source.needs_review = true;
   h.send(snapshot([batch(0, [source])], true));
   const state = await h.run();
-  assert.equal(state.status, 'ready'); assert.equal(h.requests.length, 1);
-  assert.match(h.requests[0].messages[1].content[0].text, /说话人1\/2\(待核对\)/);
-  assert.equal(state.source_segments.length, 1);
+  assert.equal(state.status, 'ready'); assert.equal(state.route, 'direct'); assert.equal(state.final_report_complete, true);
+  assert.equal(h.requests.length, 1); assert.equal(h.requests[0].max_tokens, 1800);
+  assert.match(h.requests[0].messages[1].content[0].text, /待确认：扩建住房/);
+  assert.equal(state.unsaved_segments, 0); assert.equal(state.completed_batches, 1); assert.equal(h.stops(), 1);
+  assert.equal(state.within_post_stop_target, true);
 });
 
-test('failed atomic edit stays failed and visible while later batches still run', async t => {
-  const h = await harness(t, [{ text: '## 讨论\n- 合法新增。\n## 修订\n- F0099：非法覆盖。' },
-    { text: '## 行动\n- 小王提供报价。' }]);
-  h.send(snapshot([batch(0, [row('a', '讨论预算。')]), batch(1, [row('b', '小王提供报价。', 20, 30)])], true));
-  const state = await h.run();
-  assert.equal(state.status, 'failed'); assert.equal(state.failed_batches, 1); assert.equal(state.pending_batches, 1);
-  assert.equal(state.completed_batches, 1); assert.equal(h.requests.length, 2);
-  assert.doesNotMatch(state.markdown, /合法新增|非法覆盖/); assert.match(state.markdown, /小王提供报价/);
+test('one saved note still finalizes from the whole transcript, not that note', async t => {
+  const h = await harness(t, [{ text: note('会中') }, { text: note('会后') }]);
+  const first = batch(0, [row('a', long('甲'))]);
+  h.send(snapshot([first])); const running = h.run();
+  await until(() => h.state().notes.length === 1);
+  h.send(snapshot([first], true));
+  const state = await running;
+  assert.equal(state.route, 'direct'); assert.equal(state.status, 'ready');
+  assert.match(h.requests.at(-1).messages[1].content[0].text, /甲预算为两万元/);
+  assert.doesNotMatch(h.requests.at(-1).messages[1].content[0].text, /会中讨论/);
 });
 
-test('backlog includes ASR rows still waiting for speaker labels', async t => {
-  const h = await harness(t, [{ text: '无新增' }], 80);
-  const first = batch(0, [row('a', '讨论住房。')]);
-  const tail = batch(1, [row('b', '尾部安排。', 20, 25)]);
-  const early = snapshot([first]);
-  early.transcript_segments = [first.segments[0], tail.segments[0]];
-  early.recording_stopped_at = Date.now();
-  h.send(early); const running = h.run();
+test('two notes close by combining same-name sections, preserving a final tail and serial calls', async t => {
+  const h = await harness(t, body => ({ text: body.messages[0].content.startsWith('你整理')
+    ? '该章整合了全部材料。' : note('分段') }), 20);
+  const first = batch(0, [row('a', long('甲'))]);
+  h.send(snapshot([first])); const running = h.run();
+  await until(() => h.state().notes.length === 1);
+  const second = batch(1, [row('b', long('乙'), 20, 40)]);
+  h.send(snapshot([first, second]));
+  await until(() => h.state().notes.length >= 2);
+  const tail = batch(2, [row('c', '最后新增预算审批事项。', 40, 45)]);
+  h.send(snapshot([first, second, tail], true));
+  const state = await running;
+  assert.equal(state.status, 'ready'); assert.equal(state.route, 'section_wise');
+  assert.equal(state.completed_batches, 3); assert.equal(state.unsaved_segments, 0);
+  assert.equal(h.maximum(), 1); assert.equal(h.stops(), 1);
+  assert.ok(h.requests.some(r => r.max_tokens === 1280 && r.messages[1].content[0].text.includes('最后新增预算审批事项')));
+  const sectionCalls = h.requests.filter(r => r.max_tokens === 2048);
+  assert.equal(sectionCalls.length, 4); // Empty conclusion needs no model call.
+  assert.ok(sectionCalls[1].messages[1].content[0].text.match(/先试点再扩展/g).length >= 2);
+  assert.equal(h.requests.at(-1).max_tokens, 2048); // No additional whole-report rewrite.
+  assert.match(state.markdown, /## 结论\n未提及/);
+});
+
+test('stop cancels a pending note, keeps its cursor unchanged and hands complete text to finalization', async t => {
+  const h = await harness(t, [{ text: note('不得提交') }, { text: note('最终') }], 150);
+  const first = batch(0, [row('a', long('甲'))]);
+  h.send(snapshot([first])); const running = h.run();
   await until(() => h.requests.length === 1);
+  h.send(snapshot([first], true));
+  const state = await running;
+  assert.equal(state.status, 'ready'); assert.equal(state.notes.length, 0); assert.equal(state.route, 'direct');
+  assert.match(h.requests[1].messages[1].content[0].text, /甲预算/);
+  assert.doesNotMatch(state.markdown, /不得提交/);
+  const checkpoints = fs.readdirSync(path.join(h.directory, 'calls')).map(f => JSON.parse(fs.readFileSync(path.join(h.directory, 'calls', f))));
+  assert.ok(checkpoints.some(c => c.status === 'cancelled'));
+});
+
+test('a truncated recording note does not consume source; final full-source generation can recover it', async t => {
+  const h = await harness(t, [{ text: note('半截'), finish: 'length' }, { text: note('恢复') }]);
+  const first = batch(0, [row('a', long('甲'))]);
+  h.send(snapshot([first])); const running = h.run();
+  await until(() => h.state().recording_note_failures === 1);
+  assert.equal(h.state().cursor, 0); assert.equal(h.state().notes.length, 0);
+  h.send(snapshot([first], true));
+  const state = await running;
+  assert.equal(state.status, 'ready'); assert.match(state.markdown, /恢复/); assert.doesNotMatch(state.markdown, /半截/);
+});
+
+test('a final generation failure preserves raw sources and never labels a partial report complete', async t => {
+  const h = await harness(t, [{ text: note(), finish: 'length' }]);
+  h.send(snapshot([batch(0, [row('a', '必须保存的原文。')])], true));
+  const state = await h.run();
+  assert.equal(state.status, 'failed'); assert.equal(state.final_report_complete, false);
+  assert.equal(state.source_segments[0].text, '必须保存的原文。'); assert.equal(state.within_post_stop_target, false);
+});
+
+test('backlog includes text awaiting speaker labels and clears only after final sources arrive', async t => {
+  const h = await harness(t, [{ text: note() }]);
+  const first = batch(0, [row('a', '讨论住房。')]), tail = batch(1, [row('b', '尾部安排。', 20, 25)]);
+  const early = snapshot([first]); early.transcript_segments = [first.segments[0], tail.segments[0]];
+  early.recording_stopped_at = Date.now(); h.send(early);
+  const running = h.run();
+  await until(() => h.state().observed_segments === 2);
+  assert.equal(h.state().unsaved_segments, 2); assert.equal(h.requests.length, 0);
   assert.equal(h.state().unsaved_segments_at_stop, 2);
-  assert.equal(h.state().observed_segments, 2);
   h.send(snapshot([first, tail], true));
   const state = await running;
-  assert.equal(state.unsaved_segments, 0);
-  assert.equal(state.status, 'ready');
+  assert.equal(state.status, 'ready'); assert.equal(state.unsaved_segments, 0);
 });
 
-test('truncated output never commits a partial fact', async t => {
-  const h = await harness(t, [{ text: '## 行动\n- 提交报告。', finish: 'length' }]);
-  h.send(snapshot([batch(0, [row('a', '提交报告。')])], true));
-  const state = await h.run();
-  assert.equal(state.completed_batches, 0); assert.equal(state.facts.facts.length, 0);
-  assert.equal(state.status, 'failed');
-});
-
-test('stop deadline aborts an in-flight request, preserves transcript and releases the model', async t => {
-  const h = await harness(t, [{ text: '## 行动\n- 不得提交。' }], 200);
-  h.send(snapshot([batch(0, [row('a', '原始录音文本。')])], true));
-  const state = await h.run({ drainMs: 100 });
-  assert.equal(state.status, 'failed'); assert.equal(state.facts.facts.length, 0);
-  assert.equal(state.source_segments[0].text, '原始录音文本。'); assert.equal(h.stops(), 1);
-});
-
-test('cancel and memory pressure stop requests without committing late output', async t => {
-  for (const mode of ['cancel', 'memory']) {
-    const h = await harness(t, [{ text: '## 行动\n- 不得提交。' }], 200);
-    h.send(snapshot([batch(0, [row('a', '完整原文。')])]));
+test('hard stop deadline, cancellation and memory pressure release the owned model', async t => {
+  for (const mode of ['deadline', 'cancel', 'memory']) {
+    const h = await harness(t, [{ text: note('不得提交') }], 200);
+    h.send(snapshot([batch(0, [row('a', mode === 'deadline' ? '原始录音文本。' : long('甲'))])], mode === 'deadline'));
     let memory = 2 ** 32;
-    const running = h.run({ freeMemory: () => memory });
+    const running = h.run({ drainMs: mode === 'deadline' ? 100 : 1200000, freeMemory: () => memory });
     await until(() => h.requests.length === 1);
     if (mode === 'cancel') fs.writeFileSync(path.join(h.directory, 'cancel'), 'cancel');
-    else memory = 100;
+    if (mode === 'memory') memory = 100;
     const state = await running;
-    assert.equal(state.status, 'failed'); assert.equal(state.completed_batches, 0); assert.equal(h.stops(), 1);
+    assert.equal(state.status, 'failed'); assert.equal(state.final_report_complete, false); assert.equal(h.stops(), 1);
   }
 });
 
+test('successful identical generations reuse persisted checkpoints without another model call', async t => {
+  const h = await harness(t, [{ text: note() }]);
+  // The harness model base is available through a temporary one-request live run.
+  h.send(snapshot([batch(0, [row('a', '短会。')])], true));
+  await h.run();
+  const file = fs.readdirSync(path.join(h.directory, 'calls'))[0];
+  const saved = JSON.parse(fs.readFileSync(path.join(h.directory, 'calls', file)));
+  const generator = createGenerator({ base: 'http://127.0.0.1:1', directory: h.directory,
+    writeJson, log: () => {}, signal: new AbortController().signal });
+  const result = await generator.generate(saved.stage, saved.request.messages[0].content,
+    saved.request.messages[1].content[0].text, saved.request.max_tokens);
+  assert.equal(result, saved.content); assert.equal(h.requests.length, 1);
+});
+
+test('oversized material is split without loss and only the affected chapter is reduced', async () => {
+  const text = '预算😀是三万元。实施后再复核。'.repeat(20);
+  const parts = await splitMaterial(text, async s => Array.from(s).length <= 55);
+  assert.equal(parts.join(''), text); assert.ok(parts.every(s => !/[\uD800-\uDBFF]$/.test(s)));
+  const result = await reduceSection(text, async s => s.length <= 80, async s => s);
+  assert.ok(result.replace(/\n/g, '').includes('实施后再复核'));
+});
 test('immutable speaker prefix, source coverage, duplicate IDs and changed labels are enforced', () => {
   const b = batch(0, [row('a', '原文。')]);
   assert.equal(validateSnapshot([], snapshot([b], true)).length, 1);

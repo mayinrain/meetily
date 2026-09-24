@@ -1,4 +1,4 @@
-"""1x real-model API replay: live ASR/VAD -> Community-1 batches -> fixed-fact report.
+"""1x real-model API replay: live ASR/VAD -> Community-1 batches -> section-wise report.
 
 This excludes microphone capture, AAC encoding and the desktop UI/SQLite save.
 Use a fresh output directory. No model text or speaker labels are precomputed.
@@ -164,7 +164,7 @@ def main():
             raise RuntimeError(snapshot.get('error', 'Speaker analysis failed'))
         metrics['speakers_seconds_after_stop'] = time.monotonic()-stop_clock
         request('POST', '/v1/models/unload')
-        metrics['worker_exit'] = node.wait(timeout=max(5, 130-(time.monotonic()-stop_clock)))
+        metrics['worker_exit'] = node.wait(timeout=max(5, 1210-(time.monotonic()-stop_clock)))
         summary = json.loads((workflow/'state.json').read_text())
         labelled = [s for b in snapshot['result']['batches'] for s in b['segments']]
         assert len(labelled) == len(rows)
@@ -172,6 +172,8 @@ def main():
         metrics.update(status=summary['status'], segments=len(rows), batches=len(summary['batches']),
                        completed_batches=summary['completed_batches'], failed_batches=summary['failed_batches'],
                        maximum_audio_lag_s=maximum_lag, summary_seconds_after_stop=time.monotonic()-stop_clock,
+                       within_post_stop_target=summary['within_post_stop_target'], route=summary.get('route'),
+                       notes=len(summary['notes']), maximum_pending_characters=summary['maximum_pending_characters'],
                        error=summary.get('error'))
         atomic(run/'speakers.json', snapshot)
         atomic(run/'transcripts.json', rows)

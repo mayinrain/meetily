@@ -301,6 +301,9 @@ export function SummaryPanel({
       {aiSummary?.workflow === 'fixed-facts-v1' && <p className="px-4 py-2 text-xs text-gray-600">
         分段纪要草稿可能遗漏或误写内容。“暂无”仅表示暂未提取到该类事项，请结合原文核对。
       </p>}
+      {aiSummary?.workflow === 'section-notes-v1' && <p className="px-4 py-2 text-xs text-gray-600">
+        纪要由分段笔记整理生成，可能遗漏或误写内容。“未提及”仅表示模型未提取到，请结合原文核对。
+      </p>}
       {selectedTemplate === 'source_excerpts' && (!hasSummary || aiSummary?.source_excerpts) && <p className="px-4 py-2 text-xs text-gray-600">
         原句摘录保留转写原文与录音时间，可编辑校正。模型可能遗漏重点，请结合完整转写核对。
       </p>}
