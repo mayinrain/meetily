@@ -43,6 +43,9 @@ def main():
         for end in ends:
             started = time.perf_counter()
             stream.accept(clip[pos:end])
+            if stream.processed_windows:
+                snapshot_seg, snapshot_emb = stream.snapshot_features()
+                finalize_features(pipeline, snapshot_seg, snapshot_emb)
             batches.append(dict(end_s=end/16000, compute_s=time.perf_counter()-started,
                                 retained_audio_samples=len(stream.buffer)))
             assert len(stream.buffer) < stream.window

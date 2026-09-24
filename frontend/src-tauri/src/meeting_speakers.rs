@@ -100,6 +100,7 @@ fn bind_live_result(mut job: Value, request: &Value) -> Result<Value, String> {
         let end = row["audio_end_time"].as_f64().ok_or("Missing segment end")?;
         let mut intervals = Vec::new();
         let mut speakers = std::collections::BTreeSet::new();
+        let mut identity_uncertain = false;
         for turn in turns {
             let lo = turn["start"].as_f64().ok_or("Missing speaker start")?;
             let hi = turn["end"].as_f64().ok_or("Missing speaker end")?;
@@ -107,10 +108,11 @@ fn bind_live_result(mut job: Value, request: &Value) -> Result<Value, String> {
             if hi > start && lo < end {
                 intervals.push(json!({"start":start.max(lo),"end":end.min(hi),"speaker":speaker}));
                 speakers.insert(speaker);
+                identity_uncertain |= turn["identity_uncertain"] == true;
             }
         }
         annotations.push(json!({"segment_id":row["id"],"speaker_ids":speakers,
-            "needs_review":speakers.len()!=1,"intervals":intervals}));
+            "needs_review":speakers.len()!=1 || identity_uncertain,"intervals":intervals}));
     }
     job["result"]["segments"] = json!(annotations);
     job["meeting_id"] = request["meeting_id"].clone();
@@ -274,6 +276,17 @@ pub async fn name_meeting_speaker(state: tauri::State<'_, AppState>, meeting_id:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn identity_conflicts_remain_visible_after_binding_database_ids() {
+        let source = json!({"meeting_id":"meeting", "segments":[
+            {"id":"saved","text":"original","audio_start_time":0.0,"audio_end_time":1.0}]});
+        let job = json!({"status":"completed","result":{
+            "source_segments":[{"id":"live","text":"original","audio_start_time":0.0,"audio_end_time":1.0}],
+            "turns":[{"start":0.0,"end":1.0,"speaker":3,"identity_uncertain":true}]}});
+        let bound = bind_live_result(job, &source).unwrap();
+        assert_eq!(bound["result"]["segments"][0]["speaker_ids"], json!([3]));
+        assert_eq!(bound["result"]["segments"][0]["needs_review"], true);
+    }
     #[test]
     fn live_result_binds_new_database_ids_only_when_source_matches() {
         let source = json!({"meeting_id":"saved-meeting", "segments":[

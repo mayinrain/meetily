@@ -34,21 +34,28 @@ async fn response(request: reqwest::RequestBuilder) -> Result<Value, String> {
     Ok(body)
 }
 
-async fn start() -> Result<(), String> {
+async fn start<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     if SESSION.lock().unwrap().is_some() { return Err("Previous speaker stream is still active".into()); }
     *LAST.lock().unwrap() = None;
     let client = client()?;
     let health = response(client.get(format!("{SERVICE}/health"))).await?;
     // Only the prepared SenseVoice path owns an ASR model in this service.
     if health["status"] != "ready" || health["speaker_stream_available"] != true { return Ok(()); }
+    if health["speaker_model"] == "pyannote-community-1" && health["speaker_batch_publication"] != true {
+        return Err("Update the offline speech service with this build: live speaker batches are unavailable".into());
+    }
     let job = response(client.post(format!("{SERVICE}/v1/speaker-streams")).json(&json!({"sample_rate": RATE}))).await?;
     let job_id = job["job_id"].as_str().ok_or("Missing live speaker job ID")?.to_string();
+    if let Err(error) = crate::summary::live::begin(app, &job_id).await {
+        log::warn!("Could not prepare incremental summaries: {error}");
+    }
     let (sender, mut receiver) = mpsc::channel::<Input>(8);
     let segments = Arc::new(Mutex::new(Vec::<Value>::new()));
     let snapshot = Arc::new(Mutex::new(job));
     let failure = Arc::new(Mutex::new(None::<String>));
     let (worker_segments, worker_snapshot, worker_failure) = (segments.clone(), snapshot.clone(), failure.clone());
     let base = format!("{SERVICE}/v1/speaker-streams/{job_id}");
+    let summary_job_id = job_id.clone();
     let task = tokio::spawn(async move {
         let work: Result<Value, String> = async {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -65,7 +72,9 @@ async fn start() -> Result<(), String> {
                             response(client.post(format!("{base}/segments")).json(&json!({"segments": rows}))).await?;
                             sent_segments = rows.len();
                         }
-                        let state = response(client.get(&base)).await?;
+                        let mut state = response(client.get(&base)).await?;
+                        state["transcript_segments"] = json!(rows);
+                        crate::summary::live::offer(&summary_job_id, &state);
                         let running = state["status"] == "running";
                         *worker_snapshot.lock().unwrap() = state.clone();
                         if !running { return Err(state["error"].as_str().unwrap_or("Speaker worker stopped").into()); }
@@ -85,7 +94,9 @@ async fn start() -> Result<(), String> {
                         response(client.post(format!("{base}/finish"))).await?;
                         let deadline = tokio::time::Instant::now()+Duration::from_secs(110);
                         loop {
-                            let state = response(client.get(&base)).await?;
+                            let mut state = response(client.get(&base)).await?;
+                            state["transcript_segments"] = json!(rows);
+                            crate::summary::live::offer(&summary_job_id, &state);
                             if state["status"] == "completed" { return Ok(state); }
                             if state["status"] != "running" { return Err(state["error"].as_str().unwrap_or("Speaker finalization failed").into()); }
                             if tokio::time::Instant::now() > deadline { return Err("Speaker finalization timed out".into()); }
@@ -108,6 +119,7 @@ async fn start() -> Result<(), String> {
             }
         };
         *worker_snapshot.lock().unwrap() = result.clone();
+        crate::summary::live::offer(&summary_job_id, &result);
         result
     });
     log::info!("Live speaker stream started: job={job_id} rate={RATE}");
@@ -120,7 +132,7 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     *LAST.lock().unwrap() = None;
     let config = crate::api::api::api_get_transcript_config(app.clone(), app.state(), None).await;
     if !matches!(config, Ok(Some(config)) if config.provider == "sensevoice") { return; }
-    if let Err(error) = start().await {
+    if let Err(error) = start(app).await {
         log::warn!("Recording continues without live speakers: {error}");
         *LAST.lock().unwrap() = Some(json!({"job_id":uuid::Uuid::new_v4().simple().to_string(),
             "status":"failed", "mode":"recording-live", "error":error}));
@@ -158,6 +170,10 @@ pub fn segment(update: &crate::audio::transcription::TranscriptUpdate) {
 async fn close(cancel: bool) -> Option<Value> {
     let session = SESSION.lock().unwrap().take();
     let Some(mut session) = session else { return LAST.lock().unwrap().clone() };
+    let mut snapshot = session.snapshot.lock().unwrap().clone();
+    snapshot["transcript_segments"] = json!(session.segments.lock().unwrap().clone());
+    crate::summary::live::offer(&session.job_id, &snapshot);
+    crate::summary::live::recording_stopped(&session.job_id);
     *LAST.lock().unwrap() = Some(session.snapshot.lock().unwrap().clone());
     let result = match tokio::time::timeout(Duration::from_secs(115), async {
         if !cancel && !session.pending.is_empty() {
@@ -175,13 +191,22 @@ async fn close(cancel: bool) -> Option<Value> {
             json!({"job_id":session.job_id,"mode":"recording-live","status":"failed","error":format!("Speaker task did not finish: {other:?}")})
         }
     };
+    crate::summary::live::offer(&session.job_id, &result);
     *LAST.lock().unwrap() = Some(result.clone());
     Some(result)
 }
 pub async fn finish() -> Option<Value> { close(false).await }
-pub async fn cancel() { let _ = close(true).await; }
+pub async fn cancel() {
+    if let Some(session) = SESSION.lock().unwrap().as_ref() { crate::summary::live::cancel(&session.job_id); }
+    let _ = close(true).await;
+}
 
 pub fn save_recording_result(folder: &Path, result: &Value) -> Result<(), String> {
+    if let Some(job_id) = result["job_id"].as_str() {
+        if let Err(error) = crate::summary::live::attach_folder(job_id, folder) {
+            log::warn!("Could not attach incremental summaries to recording: {error}");
+        }
+    }
     let mut file = tempfile::NamedTempFile::new_in(folder).map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(&mut file, result).map_err(|e| e.to_string())?;
     file.as_file().sync_all().map_err(|e| e.to_string())?;
@@ -191,10 +216,16 @@ pub fn save_recording_result(folder: &Path, result: &Value) -> Result<(), String
 
 #[tauri::command]
 pub fn get_recording_speakers() -> Option<Value> {
-    match SESSION.lock().unwrap().as_ref() {
+    let mut value = match SESSION.lock().unwrap().as_ref() {
         Some(session) => Some(session.snapshot.lock().unwrap().clone()),
         None => LAST.lock().unwrap().clone(),
+    };
+    if let Some(value) = value.as_mut() {
+        if let Some(status) = value["job_id"].as_str().and_then(crate::summary::live::status) {
+            value["summary"] = status;
+        }
     }
+    value
 }
 
 #[cfg(test)]

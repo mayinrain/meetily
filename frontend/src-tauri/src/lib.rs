@@ -754,6 +754,7 @@ pub fn run() {
             api::api_test_custom_openai_connection,
             // Summary commands
             summary::commands::api_process_transcript,
+            summary::live::finalize_recording_summary,
             summary::commands::api_get_summary,
             summary::commands::api_save_meeting_summary,
             summary::commands::api_get_meeting_summary_language,
@@ -856,6 +857,7 @@ pub fn run() {
                 tauri::RunEvent::Exit => {
                     log::info!("Application exiting, cleaning up resources...");
                     tauri::async_runtime::block_on(async {
+                        summary::live::shutdown().await;
                         // Clean up database connection and checkpoint WAL
                         if let Some(app_state) = _app_handle.try_state::<state::AppState>() {
                             log::info!("Starting database cleanup...");

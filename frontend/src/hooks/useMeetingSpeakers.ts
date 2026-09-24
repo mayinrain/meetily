@@ -6,6 +6,7 @@ export interface SpeakerState {
     job_id: string;
     status: string;
     error?: string;
+    summary?: { status: string; completed_batches: number; queued_batches: number; failed_batches?: number; error?: string };
     progress?: { audio_end_s: number; audio_duration_s: number };
     result?: {
       turns: { start: number; end: number; speaker: number }[];

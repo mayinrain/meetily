@@ -1,4 +1,4 @@
-> 本分支的离线 SenseVoice + Pyannote Community-1 服务已纳入仓库。环境、模型准备、启动和测试见 [speech-service/README.md](speech-service/README.md)。模型权重与会议数据需单独准备。
+> 本分支已接入“实时转写 → Community-1 分批标记说话人 → Qwen3.5-4B 增量纪要 → 会后保存报告”。使用、启动及验证见 [实时会议纪要集成](docs/realtime-meeting-workflow.md)。输出仍需人工核对；模型权重与会议数据需单独准备。基础语音服务见 [speech-service/README.md](speech-service/README.md)。
 
 <div align="center" style="border-bottom: none">
     <h1>

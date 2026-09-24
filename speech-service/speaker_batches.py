@@ -36,11 +36,13 @@ def annotate_segments(segments, turns):
     """
     annotations = []
     for segment in segments:
+        matching = [t for t in turns if t['end'] > segment['audio_start_time']
+                    and t['start'] < segment['audio_end_time']]
         intervals = [dict(speaker=t['speaker'],
                           start=max(segment['audio_start_time'], t['start']),
-                          end=min(segment['audio_end_time'], t['end'])) for t in turns
-                     if t['end'] > segment['audio_start_time'] and t['start'] < segment['audio_end_time']]
+                          end=min(segment['audio_end_time'], t['end'])) for t in matching]
         speakers = sorted({t['speaker'] for t in intervals})
         annotations.append(dict(segment_id=segment['id'], speaker_ids=speakers,
-                                needs_review=len(speakers) != 1, intervals=intervals))
+                                needs_review=len(speakers) != 1 or any(t.get('identity_uncertain') for t in matching),
+                                intervals=intervals))
     return annotations

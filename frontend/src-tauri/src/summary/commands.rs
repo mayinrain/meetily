@@ -20,7 +20,7 @@ use std::sync::{LazyLock, Mutex};
 use tauri::{AppHandle, Runtime};
 
 
-static SUMMARY_START_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+pub(crate) static SUMMARY_START_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 static LAST_SUMMARY_START: LazyLock<Mutex<Option<DateTime<Utc>>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -494,6 +494,7 @@ pub async fn api_process_transcript<R: Runtime>(
 
     // ponytail: summary starts are rare; use per-meeting locks only if start contention is measured.
     let _start_guard = SUMMARY_START_LOCK.lock().await;
+    super::live::cancel_meeting(&pool, &m_id).await?;
     let started_at = next_summary_start(Utc::now());
     SummaryProcessesRepository::create_or_reset_process(&pool, &m_id, started_at)
         .await

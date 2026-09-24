@@ -70,6 +70,7 @@ def create_app(config, runs, engine_factory=Engine, speaker_config=None):
                     speakers_available=speaker_jobs.available,
                     speaker_model=getattr(speaker_config, 'backend', 'sortformer' if speaker_config else None),
                     speaker_stream_available=live_speakers.available,
+                    speaker_batch_publication=getattr(speaker_config, 'backend', None) == 'pyannote-community-1',
                     speaker_stream_active=live_speakers.active is not None)
 
     async def limited_body(request, limit):
@@ -302,7 +303,8 @@ if __name__ == "__main__":
     speaker_config = None
     if args.community_model:
         from community_config import CommunityConfig
-        speaker_config = CommunityConfig(str(args.community_python.resolve()), str(args.community_model.resolve()))
+        # Resolving a venv's Python symlink would bypass its installed packages on macOS/Linux.
+        speaker_config = CommunityConfig(str(args.community_python.absolute()), str(args.community_model.resolve()))
         if not speaker_config.available:
             parser.error('Community-1 runtime or model files are missing')
     elif args.speaker_library:

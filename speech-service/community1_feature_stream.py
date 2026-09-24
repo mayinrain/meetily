@@ -1,8 +1,8 @@
-"""Experimental Community-1 feature accumulation; cluster once at meeting end.
+"""Community-1 feature accumulation on the continuous whole-meeting window grid.
 
-Call accept only when a complete natural-segment batch is available. Internal
+Call accept with continuous PCM packets. Internal
 10-second model windows keep the exact whole-file grid and overlap. No local
-speaker labels are published or matched between batches.
+speaker labels are reset between audio packets. Clustering may inspect snapshots.
 """
 import numpy as np
 
@@ -70,17 +70,29 @@ class CommunityFeatureStream:
         self.embedding_blocks.clear()
         return segmentations, embeddings
 
+    def snapshot_features(self):
+        """Read complete model windows without padding or consuming the live tail."""
+        from pyannote.core import SlidingWindowFeature
+
+        if self.closed or not self.processed_windows:
+            raise ValueError('No open, complete feature windows to snapshot')
+        return (SlidingWindowFeature(np.concatenate(self.segmentation_blocks), self.window_spec),
+                np.concatenate(self.embedding_blocks))
+
+    @property
+    def complete_through_s(self):
+        return ((self.processed_windows-1)*self.step+self.window)/self.rate if self.processed_windows else 0
+
 
 def finalize_features(pipeline, segmentations, embeddings, uri='meeting'):
     """Run stock counting, global VBx clustering and reconstruction on ready features."""
+    import copy
     import torch
 
-    original_segmentation, original_embeddings = pipeline.get_segmentations, pipeline.get_embeddings
-    try:
-        pipeline.get_segmentations = lambda *a, **kw: segmentations
-        pipeline.get_embeddings = lambda *a, **kw: embeddings
-        # apply does not decode audio after both feature providers are replaced.
-        with torch.inference_mode():
-            return pipeline.apply({'uri': uri})
-    finally:
-        pipeline.get_segmentations, pipeline.get_embeddings = original_segmentation, original_embeddings
+    # Share read-only model weights, but bind feature providers on a separate
+    # pipeline object so background clustering never replaces capture methods.
+    snapshot = copy.copy(pipeline)
+    snapshot.get_segmentations = lambda *a, **kw: segmentations
+    snapshot.get_embeddings = lambda *a, **kw: embeddings
+    with torch.inference_mode():
+        return snapshot.apply({'uri': uri})

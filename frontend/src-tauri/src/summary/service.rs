@@ -213,6 +213,10 @@ fn extract_cached_english_markdown(
 pub struct SummaryService;
 
 impl SummaryService {
+    pub(crate) fn has_active_summary() -> bool {
+        !CANCELLATION_REGISTRY.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
+    }
+
     /// Registers a new cancellation token for a meeting.
     pub(crate) fn register_cancellation_token(
         meeting_id: &str,
@@ -252,7 +256,7 @@ impl SummaryService {
     }
 
     /// Cleans up only the matching generation token after processing completes.
-    fn cleanup_cancellation_token(meeting_id: &str, started_at: DateTime<Utc>) {
+    pub(crate) fn cleanup_cancellation_token(meeting_id: &str, started_at: DateTime<Utc>) {
         let mut registry = CANCELLATION_REGISTRY
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());

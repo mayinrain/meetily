@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -287,6 +288,13 @@ export function useRecordingStop(
                 description: 'The meeting was saved, but Auto could not detect the summary language.',
               });
             }
+          }
+
+          try {
+            await invoke('finalize_recording_summary', { meetingId });
+          } catch (error) {
+            console.warn('Could not finalize incremental meeting notes:', error);
+            toast.warning('会议已保存，分段纪要收尾未能启动，请在会议详情中重试。');
           }
 
           console.log('✅ Successfully saved COMPLETE meeting with ID:', meetingId);

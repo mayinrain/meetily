@@ -114,6 +114,19 @@ def test_bad_audio_and_changed_metadata_leave_valid_stream_usable(setup):
     assert client.post(base+'/audio?offset=1', content=bytes(4)).status_code == 409
 
 
+def test_running_api_exposes_published_batches_before_recording_stops(setup):
+    client, _, root = setup
+    job = begin(client)
+    directory = root/'runs/live-speaker-jobs'/job
+    (directory/'progress.json').write_text(json.dumps(dict(phase='features', result=None)))
+    published = dict(batches=[dict(batch_id=0, segments=[dict(id='first', text='完整语音段')])])
+    (directory/'published.json').write_text(json.dumps(published))
+    value = client.get('/v1/speaker-streams/'+job).json()
+    assert value['status'] == 'running'
+    assert value['result'] == published
+    assert client.post('/v1/speaker-streams/'+job+'/cancel').status_code == 200
+
+
 def test_native_process_failure_does_not_unload_or_block_asr(setup):
     client, mode, _ = setup
     mode['value'] = 'fail'

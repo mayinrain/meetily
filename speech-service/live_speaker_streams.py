@@ -50,6 +50,8 @@ class LiveSpeakerStreams:
         elif (directory/'progress.json').is_file():
             progress = json.loads((directory/'progress.json').read_text(encoding='utf-8'))
             state['result'] = progress.pop('result', None)
+            if state['result'] is None and (directory/'published.json').is_file():
+                state['result'] = json.loads((directory/'published.json').read_text(encoding='utf-8'))
             state['progress'] = progress
         return state
 

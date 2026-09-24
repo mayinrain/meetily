@@ -107,7 +107,12 @@ export function TranscriptPanel({
         说话人分析已停止，录音和转写继续保留，可在保存后重新分析。
       </p>}
       {speakers?.status === 'running' && !speakers.result && <p role="status" className="px-4 text-sm text-gray-500">
-        正在准备说话人标记，停止录制后完成。
+        正在积累声纹，完整语音批次处理后显示说话人。
+      </p>}
+      {speakers?.summary && <p role="status" className="px-4 text-sm text-gray-500">
+        {speakers.summary.error
+          ? '分段摘要已停止，已完成内容和原始转写已保留。'
+          : `分段纪要已完成 ${speakers.summary.completed_batches} 批，待处理 ${speakers.summary.queued_batches} 批${speakers.summary.failed_batches ? `，失败 ${speakers.summary.failed_batches} 批` : ''}。`}
       </p>}
 
       {/* Transcript content */}
