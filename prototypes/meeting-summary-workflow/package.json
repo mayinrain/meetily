@@ -1,0 +1,9 @@
+{
+  "name": "meeting-summary-workflow-experiment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build workflow.ts --target=node --outfile=workflow.mjs",
+    "test": "bun run build && bun check-workflow-submissions.ts && bun check-workflow.ts"
+  }
+}

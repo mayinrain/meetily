@@ -1,0 +1,55 @@
+{
+  "description": "Synthetic task fixture and actual model replies captured for parser regression. The legacy final heading is translated in the test; factual text is unchanged. No reference answers are sent to a model.",
+  "provenance": {
+    "legacyEventsSha256": "7b5c042e1691a8bbfbce36d6f98eb9a6e68216f30fcf51aab02b3abe263ba250",
+    "nativeTailSha256": "9bb0a487fbc3e28dbd386a2142be5675ea3e7e79b3c51d782fa984c9268b2d77"
+  },
+  "rounds": [
+    {
+      "ids": [
+        "S0001",
+        "S0002"
+      ],
+      "reply": "## 行动\n- 周报由小林负责，周五下午五点前提交。"
+    },
+    {
+      "ids": [
+        "S0003"
+      ],
+      "reply": "## 行动\n- F0003：设备清点由小周负责，周二下午完成。"
+    },
+    {
+      "ids": [
+        "S0004"
+      ],
+      "reply": "## 行动\n- F0003：客服培训由小李负责，周三上午举行。"
+    },
+    {
+      "ids": [
+        "S0005"
+      ],
+      "reply": "## 行动\n- F0001：仓库盘点交给小郑，周四下班前完成。"
+    },
+    {
+      "ids": [
+        "S0006"
+      ],
+      "reply": "## 行动\n- F0006：宣传海报由小陈设计，周六中午前交稿。"
+    },
+    {
+      "ids": [
+        "S0007",
+        "S0008"
+      ],
+      "reply": "## 待确认\n- F0007：采购预算提议两万元，待报价出来后决定是否批准。\n- F0008：供应商报价由小王收集，周三下班前提交。"
+    },
+    {
+      "ids": [
+        "S0009",
+        "S0010"
+      ],
+      "reply": "## 行动\nF0001：周报由小林负责，下周一上午十点前提交。"
+    }
+  ],
+  "nativeRevision": "## 修订\n- 已有 F0001：周报提交时间调整为下周一上午十点，周五下午五点前提交改为下周一上午十点前提交，负责人仍为小林，其他安排保持不变。"
+}
