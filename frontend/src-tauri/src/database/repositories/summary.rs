@@ -91,12 +91,9 @@ impl SummaryProcessesRepository {
         pool: &SqlitePool,
         meeting_id: &str,
     ) -> Result<Option<SummaryProcess>, sqlx::Error> {
-        sqlx::query_as::<_, SummaryProcess>(
-            "SELECT p.* FROM summary_processes p JOIN transcript_chunks t ON p.meeting_id = t.meeting_id WHERE p.meeting_id = ?",
-        )
-        .bind(meeting_id)
-        .fetch_optional(pool)
-        .await
+        // Incremental meeting summaries have no legacy full-transcript chunks.
+        // Their process state and saved report are still available to the UI.
+        Self::get_summary_data(pool, meeting_id).await
     }
 
     pub async fn create_or_reset_process(

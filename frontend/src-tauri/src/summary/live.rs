@@ -293,8 +293,12 @@ mod tests {
             "source_segments":[{"id":"live-id","text":"小林提交周报","audio_start_time":0,"audio_end_time":20}],
             "completed_batches":1,"settled_seconds_after_stop":1.5});
         SummaryProcessesRepository::create_or_reset_process(&pool,"meeting",started).await.unwrap();
+        // The public summary endpoint uses this lookup. Live batches do not create
+        // the legacy transcript_chunks rows used by full-transcript generation.
+        let pending = SummaryProcessesRepository::get_summary_data_for_meeting(&pool,"meeting").await.unwrap().unwrap();
+        assert!(pending.status.eq_ignore_ascii_case("pending"));
         save_report(&pool,"meeting",started,&value).await.unwrap();
-        let saved = SummaryProcessesRepository::get_summary_data(&pool,"meeting").await.unwrap().unwrap();
+        let saved = SummaryProcessesRepository::get_summary_data_for_meeting(&pool,"meeting").await.unwrap().unwrap();
         assert_eq!(saved.status,"completed");
         let report: Value = serde_json::from_str(&saved.result.unwrap()).unwrap();
         assert_eq!(report["markdown"],value["markdown"]);
@@ -302,7 +306,7 @@ mod tests {
         sqlx::query("UPDATE transcripts SET transcript='人工修改' WHERE id='database-id'")
             .execute(&pool).await.unwrap();
         assert!(save_report(&pool,"meeting",started,&value).await.is_err());
-        let reopened = SummaryProcessesRepository::get_summary_data(&pool,"meeting").await.unwrap().unwrap();
+        let reopened = SummaryProcessesRepository::get_summary_data_for_meeting(&pool,"meeting").await.unwrap().unwrap();
         assert_eq!(serde_json::from_str::<Value>(&reopened.result.unwrap()).unwrap()["markdown"],value["markdown"]);
     }
     #[test]
