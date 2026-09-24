@@ -15,14 +15,9 @@ import wave
 import numpy as np
 
 from core import Run, ffmpeg_path, save_json, sha256
+from atomic_json import write_json as write_progress
 from nemo_stream import NativeSpeakerStream
 from speaker_batches import annotate_segments, plan_batches
-
-
-def write_progress(path, value):
-    temporary = path.with_suffix('.tmp')
-    save_json(temporary, value)
-    temporary.replace(path)
 
 
 @dataclass

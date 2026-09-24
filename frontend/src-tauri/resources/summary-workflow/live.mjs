@@ -9,7 +9,18 @@ import { startModel } from './runtime.mjs';
 export function writeJson(file, value) {
   const temporary = file + '.tmp';
   fs.writeFileSync(temporary, JSON.stringify(value, null, 2));
-  fs.renameSync(temporary, file);
+  const deadline = performance.now() + 250;
+  try {
+    while (true) {
+      try { fs.renameSync(temporary, file); return; }
+      catch (error) {
+        if (process.platform !== 'win32' || !['EACCES', 'EPERM', 'EBUSY'].includes(error.code)
+            || performance.now() >= deadline) throw error;
+        // A Python reader on Windows can briefly deny delete sharing.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
+  } finally { fs.rmSync(temporary, { force: true }); }
 }
 
 export function validateSnapshot(previous, snapshot) {

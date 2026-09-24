@@ -10,12 +10,7 @@ from fastapi import HTTPException
 import psutil
 
 from speaker_batches import plan_batches
-
-
-def write_json(path, value):
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-    temporary.replace(path)
+from atomic_json import write_json
 
 
 class SpeakerJobs:
