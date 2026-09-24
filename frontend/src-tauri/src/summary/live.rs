@@ -24,8 +24,26 @@ fn write(path: &Path, value: &Value) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(&mut file, value).map_err(|e| e.to_string())?;
     file.as_file().sync_all().map_err(|e| e.to_string())?;
-    file.persist(path).map_err(|e| e.to_string())?;
-    Ok(())
+    #[cfg(windows)]
+    let deadline = std::time::Instant::now() + Duration::from_millis(250);
+    loop {
+        match file.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                // Windows readers/scanners can briefly deny atomic replacement.
+                // Keep the complete temporary file and retry without removing the old snapshot.
+                #[cfg(windows)]
+                if matches!(error.error.raw_os_error(), Some(5 | 32 | 33))
+                    && std::time::Instant::now() < deadline
+                {
+                    file = error.file;
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                return Err(error.to_string());
+            }
+        }
+    }
 }
 
 pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -> Result<(), String> {
@@ -273,6 +291,39 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_publish_survives_a_brief_windows_read_lock() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.json");
+        write(&path, &json!({"revision": 1})).unwrap();
+        // A reader without FILE_SHARE_DELETE temporarily prevents replacement.
+        let reader = std::fs::OpenOptions::new().read(true).share_mode(1 | 2).open(&path).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(75));
+            drop(reader);
+        });
+        let result = write(&path, &json!({"revision": 2}));
+        release.join().unwrap();
+        result.unwrap();
+        assert_eq!(read(&path).unwrap(), json!({"revision": 2}));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_publish_keeps_previous_data_when_windows_lock_persists() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.json");
+        write(&path, &json!({"revision": 1})).unwrap();
+        let _reader = std::fs::OpenOptions::new().read(true).share_mode(1 | 2).open(&path).unwrap();
+        assert!(write(&path, &json!({"revision": 2})).is_err());
+        assert_eq!(read(&path).unwrap(), json!({"revision": 1}));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
     #[tokio::test]
     async fn completed_workflow_report_is_saved_reopened_and_protected_from_stale_sources() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
