@@ -19,19 +19,19 @@ async function until(predicate) {
   for (let i = 0; i < 300; i++) { if (predicate()) return; await sleep(10); }
   throw new Error('Timed out');
 }
-async function harness(t, outputs, delay = 0) {
+async function harness(t, outputs, delay = 0, tokenCount = () => 2) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-workflow-'));
   const requests = []; let active = 0, maximum = 0, stops = 0;
   const server = http.createServer(async (req, res) => {
     const parts = []; for await (const part of req) parts.push(part);
     const body = JSON.parse(Buffer.concat(parts).toString());
     res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/apply-template') return res.end(JSON.stringify({ prompt: 'rendered' }));
-    if (req.url === '/tokenize') return res.end(JSON.stringify({ tokens: [1, 2] }));
+    if (req.url === '/apply-template') return res.end(JSON.stringify({ prompt: JSON.stringify(body.messages) }));
+    if (req.url === '/tokenize') return res.end(JSON.stringify({ tokens: Array(tokenCount(body.content)).fill(1) }));
     requests.push(body); active++; maximum = Math.max(maximum, active);
     const output = typeof outputs === 'function' ? outputs(body, requests.length) : outputs[requests.length - 1];
     await sleep(delay); active--;
-    res.end(JSON.stringify({ usage: { prompt_tokens: 2 }, choices: [{ finish_reason: output?.finish || 'stop',
+    res.end(JSON.stringify({ usage: { prompt_tokens: tokenCount(JSON.stringify(body.messages)) }, choices: [{ finish_reason: output?.finish || 'stop',
       message: { content: output?.text || '## 内容概览\n讨论会议安排。' } }] }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -156,6 +156,33 @@ test('a final generation failure preserves raw sources and never labels a partia
   const state = await h.run();
   assert.equal(state.status, 'failed'); assert.equal(state.final_report_complete, false);
   assert.equal(state.source_segments[0].text, '必须保存的原文。'); assert.equal(state.within_post_stop_target, false);
+});
+
+test('long chapters that fit context are split before output truncation, with every sentence preserved', async t => {
+  const discussion = '- 住房补贴方案仍待讨论。\n'.repeat(90);
+  const material = text => text.split('<该章节的全部分片材料>\n')[1]?.split('\n</该章节的全部分片材料>')[0];
+  const h = await harness(t, body => {
+    const source = material(body.messages[1].content[0].text);
+    if (source !== undefined) return { text: source.length > 1600 ? '被截断的前半章' : source,
+      finish: source.length > 1600 ? 'length' : 'stop' };
+    return { text: `## 主要讨论\n${discussion}` };
+  }, 0, text => Array.from(text).length);
+  const first = batch(0, [row('a', '甲'.repeat(1300) + '。')]);
+  const second = batch(1, [row('b', '乙'.repeat(1300) + '。', 20, 40)]);
+  h.send(snapshot([first])); const running = h.run();
+  await until(() => h.state().notes.length === 1);
+  h.send(snapshot([first, second]));
+  await until(() => h.state().notes.length === 2);
+  h.send(snapshot([first, second], true));
+  const state = await running;
+  assert.equal(state.status, 'ready');
+  assert.equal(state.final_report_complete, true);
+  assert.equal(state.markdown.match(/住房补贴方案仍待讨论。/g).length, 180);
+  assert.doesNotMatch(state.markdown, /被截断/);
+  const calls = h.requests.filter(r => material(r.messages[1].content[0].text) !== undefined);
+  assert.ok(calls.length > 1);
+  assert.equal(calls.map(r => material(r.messages[1].content[0].text)).join(''), state.notes.map(n => n.content.split('## 主要讨论\n')[1].trim()).join('\n\n'));
+  assert.equal(h.maximum(), 1);
 });
 
 test('backlog includes text awaiting speaker labels and clears only after final sources arrive', async t => {

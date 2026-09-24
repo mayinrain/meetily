@@ -2,6 +2,8 @@
 export const sections = ['内容概览', '主要讨论', '结论', '明确待办', '未决问题'];
 export const chunkChars = 1200, bufferChars = 300;
 export const chunkTokens = 1280, sectionTokens = 2048, directTokens = 1800;
+// A chapter can fit the context yet exceed its output budget and the 600s CPU deadline.
+export const sectionPromptTokens = 1536;
 const endOfSentence = /^(?:[。！？!?…\n]|\.(?!\d))/u;
 const closing = /[。！？!?…\s”’」』）)"']/u;
 
@@ -115,15 +117,8 @@ export async function splitMaterial(material, fits) {
 }
 
 export async function reduceSection(material, fits, generate) {
-  let current = material;
-  for (let pass = 0; pass < 3; pass++) {
-    const chunks = await splitMaterial(current, fits), outputs = [];
-    for (const chunk of chunks) outputs.push(await generate(chunk));
-    if (chunks.length === 1) return outputs[0];
-    const next = outputs.join('\n\n');
-    // Keep all outputs when the model does not compress; no arbitrary truncation.
-    if (next.length >= current.length) return next;
-    current = next;
-  }
-  return current;
+  const chunks = await splitMaterial(material, fits), outputs = [];
+  for (const chunk of chunks) outputs.push(await generate(chunk));
+  // Each group is a complete chapter fragment. Re-merging them recreates the oversized request.
+  return outputs.join('\n\n');
 }

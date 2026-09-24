@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { sourceRows } from './round.mjs';
 import { startModel } from './runtime.mjs';
 import { createGenerator } from './generation.mjs';
-import { sections, planChunk, slices, formatSources, chunkTokens, sectionTokens, directTokens,
+import { sections, planChunk, slices, formatSources, chunkTokens, sectionTokens, sectionPromptTokens, directTokens,
   chunkSystem, directSystem, chunkPrompt, sectionPrompt, sectionMaterials,
   renderNotes, renderSections, extractSections, splitMaterial, reduceSection } from './sections.mjs';
 
@@ -57,7 +57,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
     const file = path.join(directory, 'memory.json');
     return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).available_bytes : os.freemem();
   },
-    drainMs = 1200000, pollMs = 250 } = {}) {
+    drainMs = 1800000, pollMs = 250 } = {}) {
   const began = Date.now(), abort = new AbortController();
   const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
   const state = { workflow: 'section-notes-v1', model: 'qwen3.5:4b', status: 'recording', phase: 'collecting',
@@ -203,7 +203,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
         const material = materials.get(section).join('\n\n');
         let content = '未提及';
         if (material) content = await reduceSection(material,
-          part => { const p = sectionPrompt(section, part); return generator.fits(p.system, p.user, sectionTokens); },
+          part => { const p = sectionPrompt(section, part); return generator.fits(p.system, p.user, sectionTokens, sectionPromptTokens); },
           part => { const p = sectionPrompt(section, part); return generate(`section:${section}`, p.system, p.user, sectionTokens); });
         final.set(section, content); state.final_sections[section] = content; persist();
       }

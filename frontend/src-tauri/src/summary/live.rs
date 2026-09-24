@@ -1,5 +1,5 @@
 //! Connect immutable speaker batches to chunk notes and section-wise final summaries.
-use std::{collections::HashMap, path::{Path, PathBuf}, process::Stdio,
+use std::{collections::HashMap, io::{BufWriter, Write}, path::{Path, PathBuf}, process::Stdio,
     sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -23,7 +23,13 @@ fn read(path: &Path) -> Result<Value, String> {
 fn write(path: &Path, value: &Value) -> Result<(), String> {
     let mut file = tempfile::NamedTempFile::new_in(path.parent().ok_or("Missing workflow directory")?)
         .map_err(|e| e.to_string())?;
-    serde_json::to_writer_pretty(&mut file, value).map_err(|e| e.to_string())?;
+    // A meeting snapshot contains many small JSON tokens. Buffer them before
+    // writing so publishing text does not hold up the live audio sender.
+    {
+        let mut writer = BufWriter::new(&mut file);
+        serde_json::to_writer_pretty(&mut writer, value).map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
+    }
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     #[cfg(windows)]
     let deadline = std::time::Instant::now() + Duration::from_millis(250);
@@ -265,7 +271,7 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
         let result: Result<(), String> = async {
             // Experimental section close is allowed to finish so its real cost can be measured.
             // The worker reports the original 120-second target separately from this hard limit.
-            let limit = if manifest["workflow"] == WORKFLOW { 1205 } else { 125 };
+            let limit = if manifest["workflow"] == WORKFLOW { 1805 } else { 125 };
             let deadline = tokio::time::Instant::now()+Duration::from_secs(limit);
             loop {
                 if cancellation.is_cancelled() { cancel(&job_id); return Err("Summary generation cancelled".into()); }
@@ -299,6 +305,18 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn large_snapshot_is_published_completely_and_replaces_previous_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.json");
+        write(&path, &json!({"revision": 1})).unwrap();
+        let value = json!({"revision":2, "segments":(0..625).map(|i|
+            json!({"id":i,"text":"保留完整会议文本，包括缓冲区末尾。".repeat(20)}))
+            .collect::<Vec<_>>()});
+        write(&path, &value).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), serde_json::to_vec_pretty(&value).unwrap());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
     #[cfg(windows)]
     #[test]
     fn snapshot_publish_survives_a_brief_windows_read_lock() {

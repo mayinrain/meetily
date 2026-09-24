@@ -36,7 +36,8 @@ export function createGenerator({ base, directory, writeJson, log, signal }) {
     return { prompt: rendered.prompt, tokens: encoded.tokens.length };
   }
   return {
-    fits: async (system, user, maxTokens) => (await measure(system, user, maxTokens)).tokens + maxTokens <= 6144,
+    fits: async (system, user, maxTokens, maxPromptTokens = 6144) =>
+      (await measure(system, user, maxTokens)).tokens <= Math.min(6144 - maxTokens, maxPromptTokens),
     async generate(stage, system, user, maxTokens, requestSignal = signal) {
       const body = payload(system, user, maxTokens);
       const key = createHash('sha256').update(JSON.stringify({ stage, identity, body })).digest('hex');
