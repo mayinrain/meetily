@@ -132,7 +132,8 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
   async function ensureModel() {
     if (!model) {
       model = await modelFactory(directory, combined);
-      generator = createGenerator({ base: model.base, directory, writeJson, log, signal: combined });
+      if (model.id) state.model = model.id;
+      generator = createGenerator({ base: model.base, modelId: model.id, directory, writeJson, log, signal: combined });
     }
   }
   async function generate(stage, system, user, tokens, signal = combined) {

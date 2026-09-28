@@ -90,6 +90,24 @@ test('20-second meetings use complete source directly, not an empty incremental 
   assert.equal(state.within_post_stop_target, true);
 });
 
+test('an alternate model is identified in state and requests without reusing another model checkpoint', async t => {
+  const h = await harness(t, [{ text: note('旧模型') }, { text: note('新模型') }]);
+  const options = { base: h.base, directory: h.directory, writeJson, log: () => {}, signal: new AbortController().signal };
+  const old = createGenerator(options);
+  await old.generate('recording_note', '整理会议', '讨论住宿', 1280);
+  const alternate = createGenerator({ ...options, modelId: 'Qwen3-1.7B' });
+  assert.equal(await alternate.generate('recording_note', '整理会议', '讨论住宿', 1280), note('新模型'));
+  assert.equal(await alternate.generate('recording_note', '整理会议', '讨论住宿', 1280), note('新模型'));
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[0].model, 'Qwen3.5-4B');
+  assert.equal(h.requests[1].model, 'Qwen3-1.7B');
+  h.send(snapshot([batch(0, [row('short', '住宿方案待讨论。')])], true));
+  const state = await h.run({ modelFactory: async () => ({ base: h.base, id: 'Qwen3-1.7B', stop: async () => {} }) });
+  assert.equal(state.status, 'ready');
+  assert.equal(state.model, 'Qwen3-1.7B');
+  assert.equal(h.requests.at(-1).model, 'Qwen3-1.7B');
+});
+
 test('one saved note still finalizes from the whole transcript, not that note', async t => {
   const h = await harness(t, [{ text: note('会中') }, { text: note('会后') }]);
   const first = batch(0, [row('a', long('甲'))]);

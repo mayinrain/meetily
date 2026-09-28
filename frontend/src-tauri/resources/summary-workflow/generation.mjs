@@ -3,12 +3,12 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import http from 'node:http';
 
-export function createGenerator({ base, directory, writeJson, log, signal }) {
+export function createGenerator({ base, directory, writeJson, log, signal, modelId = 'Qwen3.5-4B' }) {
   const calls = path.join(directory, 'calls'); fs.mkdirSync(calls, { recursive: true });
   const file = process.env.MEETILY_WORKFLOW_MODEL;
   const stat = file && fs.existsSync(file) ? fs.statSync(file) : null;
   const identity = { file, size: stat?.size, modified: stat?.mtimeMs };
-  const payload = (system, user, maxTokens) => ({ model: 'Qwen3.5-4B',
+  const payload = (system, user, maxTokens) => ({ model: modelId,
     messages: [{ role: 'system', content: system }, { role: 'user', content: [{ type: 'text', text: user }] }],
     stream: false, max_tokens: maxTokens, temperature: 0.2, top_p: 0.9, top_k: 40,
     min_p: 0, repeat_penalty: 1, presence_penalty: 0, repeat_last_n: 64, seed: 42,
