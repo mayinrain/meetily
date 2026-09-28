@@ -299,7 +299,11 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const directory = process.argv[2];
-  if (!directory || fs.existsSync(path.join(directory, 'state.json'))) throw new Error('Expected a fresh recording directory');
+  if (!directory) throw new Error('Expected a fresh recording directory');
+  const file = path.join(directory, 'state.json');
+  const initial = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+  if (initial && (initial.status !== 'starting' || initial.workflow !== 'section-notes-v1'))
+    throw new Error('Expected a fresh recording directory');
   const controller = new AbortController();
   process.stdin.resume();
   process.stdin.on('end', () => controller.abort(new Error('Application disconnected')));

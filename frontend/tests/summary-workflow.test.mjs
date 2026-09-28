@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { planChunk, slices, formatSources, splitMaterial, reduceSection } from '../src-tauri/resources/summary-workflow/sections.mjs';
 import { createGenerator } from '../src-tauri/resources/summary-workflow/generation.mjs';
@@ -61,6 +63,29 @@ test('slow non-streaming generation is governed by the application deadline', as
 
 const note = (label = '本段') => `## 内容概览\n${label}讨论预算和推进安排。\n## 主要讨论\n- ${label}提出先试点再扩展。\n## 结论\n未提及\n## 明确待办\n- [ ] 提供报价。\n## 未决问题\n- 预算待确认。`;
 const long = label => `${label}预算为两万元，先试点再扩展。`.repeat(85);
+
+test('worker accepts the native startup snapshot but does not resume an old report', async t => {
+  for (const status of ['starting', 'ready']) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-native-start-'));
+    writeJson(path.join(directory, 'state.json'), { status, workflow: 'section-notes-v1' });
+    writeJson(path.join(directory, 'memory.json'), { available_bytes: 2 ** 32 });
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../src-tauri/resources/summary-workflow/live.mjs', import.meta.url)), directory],
+      { stdio: ['pipe', 'ignore', 'pipe'] });
+    let errors = ''; child.stderr.on('data', text => { errors += text; });
+    const ended = new Promise(resolve => child.once('exit', resolve));
+    t.after(async () => { if (child.exitCode === null) child.kill(); await ended; fs.rmSync(directory, { recursive: true, force: true }); });
+    if (status === 'starting') {
+      await until(() => JSON.parse(fs.readFileSync(path.join(directory, 'state.json'))).status === 'recording');
+      child.stdin.end(); await ended;
+      assert.doesNotMatch(errors, /Expected a fresh recording directory/);
+      assert.match(JSON.parse(fs.readFileSync(path.join(directory, 'state.json'))).error, /Application disconnected/);
+    } else {
+      await ended;
+      assert.match(errors, /Expected a fresh recording directory/);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(directory, 'state.json'))).status, 'ready');
+    }
+  }
+});
 
 test('character chunks preserve full sentences, readable labels, offsets and overlap', () => {
   const rows = [{ id: 'a', text: '甲'.repeat(1194) + '预算3.5万元。尾句完整。', speakers: [1] }];
