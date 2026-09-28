@@ -37,20 +37,20 @@ export function useSummaryProgress(meetingId?: string, enabled = true) {
     setProgress(null); loadedScope.current = scope;
     if (!enabled) return;
     let stopped = false, loading = true;
+    let latest: SummaryProgress | null = null;
     let pending: ProgressEvent[] = [];
     let unlisten: (() => void) | undefined, timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
       try {
-        const value = await invoke<SummaryProgress | null>('get_summary_progress', { meetingId: meetingId || null });
+        const known = latest?.job_id ? { job_id: latest.job_id, seq: latest.seq, phase: latest.phase } : null;
+        const value = await invoke<SummaryProgress | null>('get_summary_progress', { meetingId: meetingId || null, known });
         if (stopped) return;
         const queued = pending; pending = [];
-        setProgress(previous => {
-          let next = value && (!previous || previous.job_id !== value.job_id || value.seq >= previous.seq) ? value : previous;
-          for (const event of queued) next = applySummaryEvent(next, event);
-          return next;
-        });
+        if (value && (!latest || latest.job_id !== value.job_id || value.seq >= latest.seq)) latest = value;
+        for (const event of queued) latest = applySummaryEvent(latest, event);
+        setProgress(latest);
         loading = false;
-        if (value?.phase === 'completed' || value?.phase === 'failed' || (meetingId && !value)) return;
+        if (latest?.phase === 'completed' || latest?.phase === 'failed' || (meetingId && !latest)) return;
       } catch (error) {
         if (!stopped) setProgress(previous => previous || { job_id: '', seq: 0, phase: 'unavailable', error: String(error) });
       }
@@ -59,7 +59,7 @@ export function useSummaryProgress(meetingId?: string, enabled = true) {
     void listen<ProgressEvent>('meeting-summary-progress', ({ payload }) => {
       if (stopped) return;
       if (loading) pending.push(payload);
-      else setProgress(previous => applySummaryEvent(previous, payload));
+      else { latest = applySummaryEvent(latest, payload); setProgress(latest); }
     }).then(dispose => {
       if (stopped) { dispose(); return; }
       unlisten = dispose; void refresh();

@@ -193,7 +193,7 @@ fn finish_progress<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str, e
 }
 
 #[tauri::command]
-pub async fn get_summary_progress(state: tauri::State<'_, crate::state::AppState>, meeting_id: Option<String>) -> Result<Option<Value>, String> {
+pub async fn get_summary_progress(state: tauri::State<'_, crate::state::AppState>, meeting_id: Option<String>, known: Option<Value>) -> Result<Option<Value>, String> {
     let pool = state.db_manager.pool();
     let saved_manifest = if let Some(id) = &meeting_id { manifest(pool, id).await? } else { None };
     let job = if meeting_id.is_some() {
@@ -224,7 +224,14 @@ pub async fn get_summary_progress(state: tauri::State<'_, crate::state::AppState
     }
     value["job_id"] = json!(job_id);
     value["meeting_id"] = json!(meeting_id);
-    Ok(Some(value))
+    Ok(changed_progress(value, known.as_ref()))
+}
+
+fn changed_progress(value: Value, known: Option<&Value>) -> Option<Value> {
+    // Check after the database lookup: saving -> completed can keep the file's sequence.
+    if known.is_some_and(|known| ["job_id", "seq", "phase"].iter().all(|key| known[*key] == value[*key])) {
+        None
+    } else { Some(value) }
 }
 
 fn send(session: &Session) -> Result<(), String> {
@@ -395,6 +402,18 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unchanged_progress_omits_the_body_but_preserves_job_and_save_transitions() {
+        let value = serde_json::json!({"job_id":"a","seq":7,"phase":"saving","notes":["正文"]});
+        let known = serde_json::json!({"job_id":"a","seq":7,"phase":"saving"});
+        assert!(super::changed_progress(value.clone(), Some(&known)).is_none());
+        assert!(super::changed_progress(value.clone(), None).is_some());
+        for changed in [serde_json::json!({"job_id":"b","seq":7,"phase":"saving"}),
+            serde_json::json!({"job_id":"a","seq":6,"phase":"saving"}),
+            serde_json::json!({"job_id":"a","seq":7,"phase":"completed"})] {
+            assert!(super::changed_progress(value.clone(), Some(&changed)).is_some());
+        }
+    }
     use super::*;
     #[test]
     fn progress_rejects_duplicate_and_stale_requests_and_preserves_drafts() {
