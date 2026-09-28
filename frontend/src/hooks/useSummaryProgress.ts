@@ -17,6 +17,7 @@ export interface SummaryProgress {
   queued_batches?: number;
   draft?: string;
   error?: string | null;
+  retry?: { attempt: number; max_retries: number; delay_ms: number } | null;
 }
 type ProgressEvent = SummaryProgress & { kind: 'snapshot' | 'delta'; request_id?: string; text?: string };
 
@@ -29,7 +30,7 @@ export function applySummaryEvent(state: SummaryProgress | null, event: Progress
 
 // Subscribe before loading a snapshot. A small independent poll repairs event gaps
 // and observes the DB commit, even after the speaker worker has finished.
-export function useSummaryProgress(meetingId?: string, enabled = true) {
+export function useSummaryProgress(meetingId?: string, enabled = true, revision = 0) {
   const [progress, setProgress] = useState<SummaryProgress | null>(null);
   const loadedScope = useRef<string | undefined>(undefined);
   const scope = meetingId || 'recording';
@@ -65,6 +66,6 @@ export function useSummaryProgress(meetingId?: string, enabled = true) {
       unlisten = dispose; void refresh();
     }).catch(() => { if (!stopped) void refresh(); });
     return () => { stopped = true; clearTimeout(timer); unlisten?.(); pending = []; };
-  }, [meetingId, enabled]);
+  }, [meetingId, enabled, revision]);
   return enabled && loadedScope.current === scope ? progress : null;
 }

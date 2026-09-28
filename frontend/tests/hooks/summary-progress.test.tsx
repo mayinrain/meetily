@@ -12,7 +12,7 @@ mock.module('@tauri-apps/api/event', () => ({ ...events, listen: async (_: strin
 const { useSummaryProgress, applySummaryEvent } = await import('../../src/hooks/useSummaryProgress');
 let current: SummaryProgress | null, renderer: ReactTestRenderer;
 const state = (job_id = 'a', seq = 1): SummaryProgress => ({ job_id, seq, phase: 'recording_note', current: { request_id: 'r1', stage: 'recording_note', draft: '开始' } });
-function Probe({ id }: { id: string }) { current = useSummaryProgress(id); return null; }
+function Probe({ id, revision = 0 }: { id: string; revision?: number }) { current = useSummaryProgress(id, true, revision); return null; }
 afterEach(async () => { if (renderer) await act(async () => renderer.unmount()); readers.length = 0; requests.length = 0; });
 afterAll(() => { mock.module('@tauri-apps/api/core', () => core); mock.module('@tauri-apps/api/event', () => events); });
 
@@ -56,3 +56,15 @@ test('unchanged snapshots keep polling with the latest event cursor and repair m
   await act(async () => readers.shift()!({ ...state('a', 4), current: { request_id: 'r1', stage: 'recording_note', draft: '完整正文' } }));
   expect(current?.current?.draft).toBe('完整正文');
 }, 10000);
+
+
+test('regeneration reloads a new job after the previous job completed', async () => {
+  await act(async () => { renderer = create(<Probe id="meeting-a" />); });
+  await act(async () => readers.shift()!({ ...state(), phase: 'completed' }));
+  await act(async () => renderer.update(<Probe id="meeting-a" revision={1} />));
+  expect(requests.at(-1).known).toBeNull();
+  await act(async () => readers.shift()!(state('new-job')));
+  expect(current?.job_id).toBe('new-job');
+  await act(async () => listener({ payload: { job_id: 'a', seq: 99, kind: 'snapshot', phase: 'completed' } }));
+  expect(current?.job_id).toBe('new-job');
+});

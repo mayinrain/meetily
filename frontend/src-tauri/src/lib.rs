@@ -756,6 +756,8 @@ pub fn run() {
             summary::commands::api_process_transcript,
             summary::live::finalize_recording_summary,
             summary::live::get_summary_progress,
+            summary::live::get_summary_model,
+            summary::live::set_summary_model,
             summary::commands::api_get_summary,
             summary::commands::api_save_meeting_summary,
             summary::commands::api_get_meeting_summary_language,

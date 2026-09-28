@@ -80,6 +80,7 @@ interface UseSummaryGenerationProps {
   updateMeetingTitle: (title: string) => void;
   setAiSummary: (summary: MeetingSummary | null) => void;
   onOpenModelSettings?: () => void;
+  onProcessStarted?: () => void;
 }
 
 export function useSummaryGeneration({
@@ -94,6 +95,7 @@ export function useSummaryGeneration({
   updateMeetingTitle,
   setAiSummary,
   onOpenModelSettings,
+  onProcessStarted,
 }: UseSummaryGenerationProps) {
   const restored = initialSummary?.meeting_id === meeting.id ? initialSummary : null;
   const [summaryStatus, setSummaryStatus] = useState<SummaryStatus>(() => restoredSummaryStatus(restored));
@@ -386,6 +388,7 @@ export function useSummaryGeneration({
         return;
       }
       activeProcessIdRef.current = processId;
+      onProcessStarted?.();
 
       startSummaryPolling(meeting.id, processId, result =>
         pollingResultRef.current(result, generationId, isRegeneration));
@@ -399,6 +402,7 @@ export function useSummaryGeneration({
     meeting.id,
     modelConfig,
     onMeetingUpdated,
+    onProcessStarted,
     selectedTemplate,
     setAiSummary,
     startSummaryPolling,

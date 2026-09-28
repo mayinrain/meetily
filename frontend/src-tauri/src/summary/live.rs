@@ -55,13 +55,38 @@ fn write(path: &Path, value: &Value) -> Result<(), String> {
     }
 }
 
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryModelChoice { #[default] Builtin, Intranet }
+
+fn model_choice(path: &Path) -> Result<SummaryModelChoice, String> {
+    if !path.exists() { return Ok(SummaryModelChoice::Builtin); }
+    serde_json::from_value(read(path)?).map_err(|e| format!("无法读取总结模型设置：{e}"))
+}
+#[tauri::command]
+pub fn get_summary_model<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<SummaryModelChoice, String> {
+    model_choice(&app.path().app_data_dir().map_err(|e| e.to_string())?.join("summary-model.json"))
+}
+#[tauri::command]
+pub fn set_summary_model<R: tauri::Runtime>(app: tauri::AppHandle<R>, model: SummaryModelChoice) -> Result<(), String> {
+    let folder = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    write(&folder.join("summary-model.json"), &json!(model))
+}
+
 pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -> Result<(), String> {
+    let _start_guard = super::commands::SUMMARY_START_LOCK.lock().await;
+    begin_unlocked(app, job_id).await
+}
+
+async fn begin_unlocked<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -> Result<(), String> {
     let state = app.state::<crate::state::AppState>();
     let config = SettingsRepository::get_model_config(state.db_manager.pool()).await.map_err(|e| e.to_string())?;
     let openvino = std::env::var("MEETILY_WORKFLOW_BACKEND").as_deref() == Ok("openvino");
-    if !config.is_some_and(|c| c.provider == "builtin-ai" && (openvino || c.model == MODEL)) { return Ok(()); }
-    let _start_guard = super::commands::SUMMARY_START_LOCK.lock().await;
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let choice = model_choice(&app_data.join("summary-model.json"))?;
+    if choice == SummaryModelChoice::Builtin && !openvino
+        && !config.is_some_and(|c| c.provider == "builtin-ai" && c.model == MODEL) { return Ok(()); }
     let directory = app_data.join("recording-summaries").join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(directory.join("runtime")).map_err(|e| e.to_string())?;
     let alive = Arc::new(AtomicBool::new(false));
@@ -85,10 +110,6 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -
             return Err("Previous summary is still running; recording and transcription continue".into());
         }
         let node = std::env::var_os("MEETILY_WORKFLOW_NODE").ok_or("Configure MEETILY_WORKFLOW_NODE for the offline summary runtime")?;
-        let server = std::env::var_os("MEETILY_WORKFLOW_SERVER").ok_or("Configure MEETILY_WORKFLOW_SERVER for the summary backend")?;
-        let model = std::env::var_os("MEETILY_WORKFLOW_MODEL").map(PathBuf::from)
-            .unwrap_or(super::summary_engine::models::get_model_path(&app_data, MODEL).map_err(|e| e.to_string())?);
-        if !model.is_file() { return Err("Configured summary model weights are not installed".into()); }
         macro_rules! source { ($name:literal) => {
             ($name, include_str!(concat!("../../resources/summary-workflow/", $name)))
         }; }
@@ -96,7 +117,7 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -
             source!("prompt.mjs"), source!("facts.mjs"), source!("text-facts.mjs"),
             source!("workflow-submissions.mjs"), source!("relevant-memory.mjs"),
             source!("sections.mjs"), source!("generation.mjs"), source!("progress.mjs"),
-            source!("runtime-openvino.mjs"), source!("openvino-server.py")] {
+            source!("runtime-openvino.mjs"), source!("runtime-intranet.mjs"), source!("openvino-server.py")] {
             std::fs::write(directory.join("runtime").join(name), source).map_err(|e| e.to_string())?;
         }
         // Release any idle built-in summary model before reserving this recording's model.
@@ -105,8 +126,19 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -
         memory.refresh_memory();
         write(&directory.join("memory.json"), &json!({"available_bytes":memory.available_memory()}))?;
         let mut command = tokio::process::Command::new(node);
+        if choice == SummaryModelChoice::Intranet {
+            command.env("MEETILY_WORKFLOW_BACKEND", "intranet")
+                .env("MEETILY_INTRANET_CONFIG", std::env::var_os("MEETILY_INTRANET_CONFIG")
+                    .map(PathBuf::from).unwrap_or(app_data.join("intranet-model.json")));
+        } else {
+            let server = std::env::var_os("MEETILY_WORKFLOW_SERVER").ok_or("本地总结服务未配置")?;
+            let model = std::env::var_os("MEETILY_WORKFLOW_MODEL").map(PathBuf::from)
+                .unwrap_or(super::summary_engine::models::get_model_path(&app_data, MODEL).map_err(|e| e.to_string())?);
+            if !model.is_file() { return Err("本地总结模型文件不可用".into()); }
+            command.env("MEETILY_WORKFLOW_SERVER", server).env("MEETILY_WORKFLOW_MODEL", model);
+        }
+        write(&directory.join("selected-model.json"), &json!(choice))?;
         command.arg(directory.join("runtime/live.mjs")).arg(&directory)
-            .env("MEETILY_WORKFLOW_SERVER", server).env("MEETILY_WORKFLOW_MODEL", model)
             .stdin(Stdio::piped()).stdout(Stdio::piped())
             .stderr(std::fs::File::create(directory.join("worker.stderr.log")).map_err(|e| e.to_string())?);
         #[cfg(windows)]
@@ -353,12 +385,15 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
     app: tauri::AppHandle<R>, state: tauri::State<'_, crate::state::AppState>, meeting_id: String,
 ) -> Result<bool, String> {
     let _start_guard = super::commands::SUMMARY_START_LOCK.lock().await;
-    let pool = state.db_manager.pool().clone();
+    finalize_unlocked(app, state.db_manager.pool().clone(), meeting_id, false).await
+}
+
+async fn finalize_unlocked<R: tauri::Runtime>(app: tauri::AppHandle<R>, pool: SqlitePool, meeting_id: String, restart: bool) -> Result<bool, String> {
     let Some(manifest) = manifest(&pool, &meeting_id).await? else { return Ok(false) };
     let directory = PathBuf::from(manifest["run_directory"].as_str().ok_or("Missing workflow directory")?);
     let job_id = manifest["job_id"].as_str().ok_or("Missing workflow job ID")?.to_owned();
     if let Some(existing) = SummaryProcessesRepository::get_summary_data(&pool, &meeting_id).await.map_err(|e| e.to_string())? {
-        if existing.status.eq_ignore_ascii_case("pending") || existing.status == "completed" { return Ok(true); }
+        if !restart && (existing.status.eq_ignore_ascii_case("pending") || existing.status == "completed") { return Ok(true); }
     }
     let started = chrono::Utc::now();
     SummaryProcessesRepository::create_or_reset_process(&pool, &meeting_id, started).await.map_err(|e| e.to_string())?;
@@ -400,8 +435,58 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
     Ok(true)
 }
 
+// Manual generation uses the selected runtime too; read current DB text rather than old drafts.
+pub async fn regenerate<R: tauri::Runtime>(app: &tauri::AppHandle<R>, pool: &SqlitePool, meeting_id: &str) -> Result<String, String> {
+    let _start_guard = super::commands::SUMMARY_START_LOCK.lock().await;
+    cancel_meeting(pool, meeting_id).await?;
+    let meeting = MeetingsRepository::get_meeting(pool, meeting_id).await.map_err(|e| e.to_string())?.ok_or("会议不存在")?;
+    let metadata = MeetingsRepository::get_meeting_metadata(pool, meeting_id).await.map_err(|e| e.to_string())?.ok_or("会议信息不存在")?;
+    let folder = metadata.folder_path.ok_or("会议录音目录不存在")?;
+    let mut rows = meeting.transcripts.iter().collect::<Vec<_>>();
+    rows.sort_by(|a, b| a.audio_start_time.partial_cmp(&b.audio_start_time).unwrap_or(std::cmp::Ordering::Equal).then(a.id.cmp(&b.id)));
+    if rows.is_empty() { return Err("暂无可用于总结的转写".into()); }
+    let speakers = crate::meeting_speakers::get_meeting_speakers(app.state(), meeting_id.into()).await?;
+    let segments = rows.iter().map(|r| {
+        let mut ids = json!([]);
+        let mut uncertain = json!(true);
+        if let Some(saved) = speakers.as_ref().filter(|s| s.job["status"] == "completed") {
+            if let Some(annotation) = saved.job["result"]["segments"].as_array()
+                .and_then(|items| items.iter().find(|a| a["segment_id"] == r.id)) {
+                ids = annotation["speaker_ids"].clone(); uncertain = annotation["needs_review"].clone();
+            }
+            if let Some(value) = saved.overrides.get(&r.id) {
+                ids = json!(value.iter().collect::<Vec<_>>()); uncertain = json!(value.is_none());
+            }
+        }
+        json!({"id":r.id,"text":r.text,"audio_start_time":r.audio_start_time,
+            "audio_end_time":r.audio_end_time,"speaker_ids":ids,"needs_review":uncertain})
+    }).collect::<Vec<_>>();
+    let job = uuid::Uuid::new_v4().to_string();
+    begin_unlocked(app, &job).await?;
+    attach_folder(&job, Path::new(&folder))?;
+    offer(&job, &json!({"status":"completed","result":{"source_segments":segments,
+        "batches":[{"batch_id":0,"segments":segments}]}}));
+    recording_stopped(&job);
+    finalize_unlocked(app.clone(), pool.clone(), meeting_id.into(), true).await?;
+    let process = SummaryProcessesRepository::get_summary_data(pool, meeting_id).await.map_err(|e| e.to_string())?.ok_or("总结任务未创建")?;
+    Ok(process.start_time.ok_or("总结任务缺少开始时间")?.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_choice_defaults_persists_and_rejects_invalid_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("summary-model.json");
+        assert_eq!(model_choice(&file).unwrap(), SummaryModelChoice::Builtin);
+        write(&file, &json!("intranet")).unwrap();
+        let fixed_for_meeting = model_choice(&file).unwrap();
+        write(&file, &json!("builtin")).unwrap();
+        assert_eq!(fixed_for_meeting, SummaryModelChoice::Intranet);
+        assert_eq!(model_choice(&file).unwrap(), SummaryModelChoice::Builtin);
+        write(&file, &json!("unknown")).unwrap();
+        assert!(model_choice(&file).is_err());
+    }
     #[test]
     fn unchanged_progress_omits_the_body_but_preserves_job_and_save_transitions() {
         let value = serde_json::json!({"job_id":"a","seq":7,"phase":"saving","notes":["正文"]});

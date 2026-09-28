@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { MeetingSummary, SummaryProcessResponse } from '@/types';
 import Analytics from '@/lib/analytics';
@@ -60,10 +60,15 @@ export default function PageContent({
   const customPrompt = '';
   const isRecording = false;
   const [activeTab, setActiveTab] = useState<MeetingDetailsTab>('transcript');
-  const progress = useSummaryProgress(meeting.id);
+  const [progressRevision, setProgressRevision] = useState(0);
+  const progress = useSummaryProgress(meeting.id, true, progressRevision);
   const [showLiveProgress, setShowLiveProgress] = useState(true);
   const refreshedSummary = useRef<string | null>(null);
   const [savedSummary, setSavedSummary] = useState<SummaryProcessResponse | null>(null);
+  const refreshProgress = useCallback(() => {
+    refreshedSummary.current = null; setSavedSummary(null); setShowLiveProgress(true);
+    setProgressRevision(value => value + 1);
+  }, []);
   useEffect(() => { setShowLiveProgress(true); refreshedSummary.current = null; setSavedSummary(null); }, [meeting.id]);
   useEffect(() => {
     let cancelled = false;
@@ -95,6 +100,7 @@ export default function PageContent({
 
   const summaryGeneration = useSummaryGeneration({
     initialSummary: savedSummary || initialSummary,
+    onProcessStarted: refreshProgress,
     externallyTracked: showLiveProgress && !!progress,
     meeting,
     transcripts: meetingData.transcripts,

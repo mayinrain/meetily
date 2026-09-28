@@ -291,3 +291,14 @@ test('live progress maps recording and chapter materials to ASR intervals withou
   assert.equal(events.at(-1).covered_through, 120);
   assert.ok(events.every(e => e.phase !== 'completed'));
 });
+
+test('long saved transcript without live notes is split before manual regeneration', async t => {
+  const source = Array.from({ length: 12 }, (_, i) => row(String(i), long(`主题${i}`), i * 60, i * 60 + 50));
+  const h = await harness(t, () => ({ text: note() }), 0, text => Math.ceil(text.length / 2));
+  h.send(snapshot([batch(0, source)], true));
+  const result = await h.run();
+  assert.equal(result.status, 'ready'); assert.equal(result.route, 'section_wise');
+  assert.equal(result.cursor, source.reduce((sum, r) => sum + r.text.length, 0));
+  assert.ok(result.notes.length > 1); assert.equal(Object.keys(result.final_sections).length, 5);
+  assert.deepEqual(result.source_segments, source);
+});

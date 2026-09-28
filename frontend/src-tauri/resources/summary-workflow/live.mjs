@@ -96,7 +96,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
       writeJson(path.join(directory, 'state.json'), state); lastPersist = Date.now();
     }
     const covered = rows.slice(0, completeRows).at(-1)?.end || 0;
-    const phase = active ? progress.state.phase : state.status === 'failed' ? 'failed'
+    const phase = active || progress.state.retry ? progress.state.phase : state.status === 'failed' ? 'failed'
       : state.status === 'ready' ? 'saving' : !state.recording_active && !finalInput ? 'waiting_final_transcripts'
       : finalInput ? 'preparing_sections' : chunkFailureAt === state.cursor ? 'note_failed' : rows.length ? 'collecting' : 'waiting_transcripts';
     if (progress.state.phase !== phase || progress.state.queued_batches !== state.queued_batches
@@ -149,7 +149,11 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
       progress.update({ phase: 'preparing_model' });
       model = await modelFactory(directory, combined);
       if (model.id) state.model = model.id;
-      generator = createGenerator({ base: model.base, modelId: model.id, directory, writeJson, log, signal: combined, onText: text => progress.text(text) });
+      generator = createGenerator({ base: model.base, modelId: model.id, directory, writeJson, log, signal: combined,
+        retries: model.retries, reconnect: model.reconnect, onText: text => progress.text(text),
+        onRetry: retry => progress.update({ phase: 'retrying', retry, error: null,
+          current: progress.state.current ? { ...progress.state.current, request_id: String(++requestNumber), draft: '' } : null }),
+        onAttempt: ({ stage }) => progress.update({ phase: stage, retry: null }) });
     }
   }
   async function generate(stage, system, user, tokens, signal = combined, source = {}) {
@@ -162,7 +166,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
         AbortSignal.any([signal, AbortSignal.timeout(600000)]));
     } catch (error) {
       // A cancelled/failed fragment is never included in completed notes or chapters.
-      progress.update({ current: null, error: signal.aborted ? null : String(error) });
+      progress.update({ current: null, retry: null, error: signal.aborted ? null : String(error) });
       throw error;
     } finally { active = false; }
   }
@@ -203,9 +207,16 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
     }
     const total = rows.reduce((sum, row) => sum + row.text.length, 0);
     state.finalization_started_at = Date.now();
+    const fullSource = formatSources(rows);
+    let direct = state.notes.length < 2 || fullSource.length <= 1200;
+    if (direct && fullSource.length > 1200) {
+      active = true; await ensureModel();
+      direct = await generator.fits(directSystem, `<完整会议转写>\n${fullSource}\n</完整会议转写>`, directTokens);
+      active = false;
+    }
     if (!rows.length) {
       state.markdown = renderSections(new Map()); state.route = 'empty';
-    } else if (state.notes.length < 2 || formatSources(rows).length <= 1200) {
+    } else if (direct) {
       state.route = 'direct';
       const content = await generate('direct_final', directSystem,
         `<完整会议转写>\n${formatSources(rows)}\n</完整会议转写>`, directTokens, combined, { whole_meeting: true, ranges: ranges(rows) });
@@ -273,7 +284,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
     progress.update({ current: null, phase: 'saving', draft: state.markdown });
   } catch (error) {
     state.status = 'failed'; state.error = String(abort.signal.reason || error); state.failed_batches++;
-    progress.update({ current: null, phase: 'failed', error: state.error });
+    progress.update({ current: null, retry: null, phase: 'failed', error: state.error });
   } finally {
     clearInterval(timer);
     if (model) await model.stop();

@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
-import { Plus, Search, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Mic } from 'lucide-react';
+import { Plus, Search, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Mic, Settings } from 'lucide-react';
 import { useSidebar, type CurrentMeeting } from './SidebarProvider';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
@@ -79,6 +79,11 @@ export default function Sidebar() {
           {!visible.length && <p className="px-3 py-4 text-sm text-gray-600">{query ? '没有找到匹配的会议' : '还没有会议记录，点击“开始会议”创建。'}</p>}
         </nav>
       </>}
+      <div className="mt-auto shrink-0 border-t border-gray-200 p-3">
+        <Button variant="ghost" className="w-full justify-start gap-2" title="设置" aria-label="设置" onClick={() => router.push('/settings')}>
+          <Settings size={18} />{!isCollapsed && '设置'}
+        </Button>
+      </div>
     </aside>
     <Dialog open={!!editing} onOpenChange={open => { if (!open && !busy) setEditing(null); }}><DialogContent><DialogTitle>重命名会议</DialogTitle><DialogDescription>输入便于查找的会议标题。</DialogDescription>
       <Input aria-label="会议标题" value={title} onChange={e => setTitle(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void save(); }} />

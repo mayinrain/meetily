@@ -35,7 +35,9 @@ export function SummaryProgressPanel({ progress, onRetry }: { progress: Progress
   const current = progress?.current;
   return <div className="relative flex h-full min-h-0 flex-col bg-white">
     <div className="border-b border-gray-200 px-5 py-4">
-      <p role="status" className="font-medium text-gray-900">{current?.section
+      <p role="status" className="font-medium text-gray-900">{progress?.phase === 'retrying' && progress.retry
+        ? `内网模型连接中断，${progress.retry.delay_ms / 1000} 秒后自动重试（${progress.retry.attempt}/${progress.retry.max_retries}）`
+        : current?.section
         ? `正在整理${current.section}，第 ${current.group}/${current.groups} 组`
         : labels[progress?.phase || 'waiting_transcripts'] || '正在整理会议纪要'}</p>
       <p className="mt-1 text-sm text-gray-600">已完成 {progress?.completed_notes || 0} 段 · 已整理至 {audioTime(progress?.covered_through)} · 等待整理 {progress?.queued_batches || 0} 批转写

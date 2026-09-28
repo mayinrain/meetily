@@ -483,6 +483,11 @@ pub async fn api_process_transcript<R: Runtime>(
     );
 
     let pool = state.db_manager.pool().clone();
+    if std::env::var("MEETILY_WORKFLOW_BACKEND").as_deref() == Ok("openvino")
+        || super::live::get_summary_model(app.clone())? == super::live::SummaryModelChoice::Intranet {
+        let process_id = super::live::regenerate(&app, &pool, &m_id).await?;
+        return Ok(ProcessTranscriptResponse { message: "正在生成会议纪要".into(), process_id });
+    }
     let final_prompt = custom_prompt.unwrap_or_else(|| "".to_string());
     let final_template_id = template_id.unwrap_or_else(|| "daily_standup".to_string());
 
