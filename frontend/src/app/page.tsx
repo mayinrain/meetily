@@ -1,13 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { RecordingControls } from '@/components/RecordingControls';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
-import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
-import { StatusOverlays } from '@/app/_components/StatusOverlays';
 import Analytics from '@/lib/analytics';
 import { SettingsModals } from './_components/SettingsModal';
 import { TranscriptPanel } from './_components/TranscriptPanel';
@@ -20,33 +19,44 @@ import { TranscriptRecovery } from '@/components/TranscriptRecovery';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+import { DeviceSelection } from '@/components/DeviceSelection';
+import { MeetingDetailsSplitView, type MeetingDetailsTab } from '@/components/MeetingDetails/MeetingDetailsSplitView';
+import { SummaryProgressPanel, audioTime } from '@/components/SummaryProgress';
+import { useSummaryProgress } from '@/hooks/useSummaryProgress';
 
 export default function Home() {
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
-  const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
+  const barHeights: string[] = [];
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
 
   // Use contexts for state management
-  const { meetingTitle } = useTranscripts();
-  const { transcriptModelConfig, selectedDevices } = useConfig();
+  const { meetingTitle, setMeetingTitle } = useTranscripts();
+  const { transcriptModelConfig, selectedDevices, setSelectedDevices } = useConfig();
   const recordingState = useRecordingState();
 
   // Extract status from global state
   const { status, isStopping, isProcessing, isSaving } = recordingState;
 
   // Hooks
-  const { hasMicrophone } = usePermissionCheck();
-  const { setIsMeetingActive, isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
+  const { setIsMeetingActive, refetchMeetings } = useSidebar();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const { isRecordingDisabled, setIsRecordingDisabled } = useRecordingStateSync(isRecording, setIsRecordingState, setIsMeetingActive);
   const { handleRecordingStart } = useRecordingStart(isRecording, setIsRecordingState, showModal);
+
+  const startMeeting = useCallback(async () => {
+    await invoke('stop_audio_level_monitoring');
+    await handleRecordingStart();
+  }, [handleRecordingStart]);
 
   // Get handleRecordingStop function and setIsStopping (state comes from global context)
   const { handleRecordingStop, setIsStopping } = useRecordingStop(
     setIsRecordingState,
     setIsRecordingDisabled
   );
+
+  const stopMeeting = useCallback((callApi = true) => handleRecordingStop(callApi), [handleRecordingStop]);
+  const showTranscriptionError = useCallback((message: string) => showModal('errorAlert', message), [showModal]);
 
   // Recovery hook
   const {
@@ -60,6 +70,12 @@ export default function Home() {
   } = useTranscriptRecovery();
 
   const router = useRouter();
+  const [activeTab, setActiveTab] = useState<MeetingDetailsTab>('transcript');
+  const activeMeeting = recordingState.isRecording || isStopping || isProcessing || isSaving;
+  const summaryProgress = useSummaryProgress(undefined, activeMeeting);
+  useEffect(() => {
+    if (sessionStorage.getItem('meeting-workspace-tab') === 'summary') setActiveTab('summary');
+  }, []);
 
   useEffect(() => {
     // Track page view
@@ -123,12 +139,12 @@ export default function Home() {
       const result = await recoverMeeting(meetingId);
 
       if (result.success) {
-        toast.success('Meeting recovered successfully!', {
+        toast.success('会议已恢复', {
           description: result.audioRecoveryStatus?.status === 'success'
-            ? 'Transcripts and audio recovered'
-            : 'Transcripts recovered (no audio available)',
+            ? '转写和录音已恢复'
+            : '转写已恢复，暂无录音',
           action: result.meetingId ? {
-            label: 'View Meeting',
+            label: '查看会议',
             onClick: () => {
               router.push(`/meeting-details?id=${result.meetingId}`);
             }
@@ -152,8 +168,8 @@ export default function Home() {
         }
       }
     } catch (error) {
-      toast.error('Failed to recover meeting', {
-        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      toast.error('恢复会议失败', {
+        description: '请检查本地会议文件和保存目录权限后重试。',
       });
       throw error;
     }
@@ -168,22 +184,6 @@ export default function Home() {
       sessionStorage.removeItem('recovery_dialog_shown');
     }
   };
-
-  useEffect(() => {
-    if (recordingState.isRecording) {
-      const interval = setInterval(() => {
-        setBarHeights(prev => {
-          const newHeights = [...prev];
-          newHeights[0] = Math.random() * 20 + 10 + 'px';
-          newHeights[1] = Math.random() * 20 + 10 + 'px';
-          newHeights[2] = Math.random() * 20 + 10 + 'px';
-          return newHeights;
-        });
-      }, 300);
-
-      return () => clearInterval(interval);
-    }
-  }, [recordingState.isRecording]);
 
   // Computed values using global status
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
@@ -206,54 +206,33 @@ export default function Home() {
         onDelete={deleteRecoverableMeeting}
         onLoadPreview={loadMeetingTranscripts}
       />
-      <div className="flex flex-1 overflow-hidden">
-        <TranscriptPanel
-          isProcessingStop={isProcessingStop}
-          isStopping={isStopping}
-          showModal={showModal}
-        />
-
-        {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
-        {(hasMicrophone || isRecording) &&
-          status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
-          status !== RecordingStatus.SAVING && (
-            <div className="fixed bottom-12 left-0 right-0 z-10">
-              <div
-                className="flex justify-center pl-8 transition-[margin] duration-300"
-                style={{
-                  marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-                }}
-              >
-                <div className="w-2/3 max-w-[750px] flex justify-center">
-                  <div className="bg-white rounded-full shadow-lg flex items-center">
-                    <RecordingControls
-                      isRecording={recordingState.isRecording}
-                      onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
-                      onRecordingStart={handleRecordingStart}
-                      onTranscriptReceived={() => { }} // Not actually used by RecordingControls
-                      onStopInitiated={() => setIsStopping(true)}
-                      barHeights={barHeights}
-                      onTranscriptionError={(message) => {
-                        showModal('errorAlert', message);
-                      }}
-                      isRecordingDisabled={isRecordingDisabled}
-                      isParentProcessing={isProcessingStop}
-                      selectedDevices={selectedDevices}
-                      meetingName={meetingTitle}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-        {/* Status Overlays - Processing and Saving */}
-        <StatusOverlays
-          isProcessing={status === RecordingStatus.PROCESSING_TRANSCRIPTS && !recordingState.isRecording}
-          isSaving={status === RecordingStatus.SAVING}
-          sidebarCollapsed={sidebarCollapsed}
-        />
-      </div>
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-white px-5 py-4">
+        <div className="min-w-0 flex-1">
+          {activeMeeting ? <h1 className="break-words text-lg font-semibold">{meetingTitle || '会议进行中'}</h1>
+            : <h1 className="text-lg font-semibold">开始会议</h1>}
+          {activeMeeting && <p className="mt-1 text-sm text-gray-600">{recordingState.isPaused ? '已暂停' : isSaving ? '正在保存会议' : isProcessingStop ? '正在收尾转写' : '会议进行中'} · {audioTime(recordingState.activeDuration || 0)}</p>}
+        </div>
+        {activeMeeting && <RecordingControls isRecording={recordingState.isRecording}
+          onRecordingStop={stopMeeting} onRecordingStart={startMeeting}
+          onTranscriptReceived={() => {}} onStopInitiated={() => setIsStopping(true)} barHeights={barHeights}
+          onTranscriptionError={showTranscriptionError}
+          isRecordingDisabled={isRecordingDisabled} isParentProcessing={isProcessingStop || isSaving} />}
+      </header>
+      {!activeMeeting ? <div className="flex-1 overflow-y-auto bg-white p-6">
+        <div className="mx-auto max-w-xl space-y-6 py-6">
+          <div><label htmlFor="meeting-title" className="mb-2 block text-sm font-medium">会议标题</label>
+            <input id="meeting-title" className="w-full rounded-md border border-gray-300 p-3 text-sm" placeholder="未填写时按开始时间命名"
+              value={meetingTitle} onChange={e => setMeetingTitle(e.target.value)} /></div>
+          <DeviceSelection selectedDevices={selectedDevices} onDeviceChange={setSelectedDevices} disabled={recordingState.isStartingRecording} />
+          <RecordingControls isRecording={false} onRecordingStop={stopMeeting} onRecordingStart={startMeeting}
+            onTranscriptReceived={() => {}} barHeights={barHeights}
+            onTranscriptionError={showTranscriptionError}
+            isRecordingDisabled={isRecordingDisabled} isParentProcessing={false} />
+        </div>
+      </div> : <MeetingDetailsSplitView activeTab={activeTab} onTabChange={tab => {
+        setActiveTab(tab); sessionStorage.setItem('meeting-workspace-tab', tab);
+      }} transcript={<TranscriptPanel isProcessingStop={isProcessingStop} isStopping={isStopping} showModal={showModal} />}
+        summary={<SummaryProgressPanel progress={summaryProgress} />} />}
     </div>
   );
 }

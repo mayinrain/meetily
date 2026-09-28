@@ -11,8 +11,6 @@ import { SpeakerControls } from './SpeakerControls';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
-  customPrompt: string;
-  onPromptChange: (value: string) => void;
   onCopyTranscript: () => void;
   onOpenMeetingFolder: () => Promise<void>;
   isRecording: boolean;
@@ -35,8 +33,6 @@ interface TranscriptPanelProps {
 
 export function TranscriptPanel({
   transcripts,
-  customPrompt,
-  onPromptChange,
   onCopyTranscript,
   onOpenMeetingFolder,
   isRecording,
@@ -86,7 +82,7 @@ export function TranscriptPanel({
     if (meetingId && !isRecording) {
       invoke<string | null>('get_meeting_audio_path', { meetingId })
         .then(path => { if (!cancelled) setAudioPath(path); })
-        .catch(() => { if (!cancelled) setAudioError('Unable to load recording.'); });
+        .catch(() => { if (!cancelled) setAudioError('无法加载录音，请检查文件是否存在。'); });
     }
     return () => { cancelled = true; };
   }, [meetingId, isRecording]);
@@ -96,7 +92,7 @@ export function TranscriptPanel({
     if (!audio || !audioReady) return;
     audio.currentTime = Math.min(Math.max(0, seconds), audio.duration);
     audio.play().catch(error => {
-      if (error.name !== 'AbortError') setAudioError('Unable to play recording.');
+      if (error.name !== 'AbortError') setAudioError('无法播放录音，请检查音频设备。');
     });
   }, [audioReady]);
 
@@ -144,11 +140,11 @@ export function TranscriptPanel({
             ref={audioRef}
             controls
             preload="metadata"
-            aria-label="Meeting recording"
+            aria-label="会议录音"
             className="w-full h-10"
             src={convertFileSrc(audioPath)}
             onLoadedMetadata={() => setAudioReady(true)}
-            onError={() => { setAudioReady(false); setAudioError('Unable to play recording.'); }}
+            onError={() => { setAudioReady(false); setAudioError('无法播放录音，请检查音频设备。'); }}
           />
         </div>
       )}
@@ -176,17 +172,6 @@ export function TranscriptPanel({
         />
       </div>
 
-      {/* Custom prompt input at bottom of transcript section */}
-      {!isRecording && convertedSegments.length > 0 && (
-        <div className="p-1 border-t border-gray-200">
-          <textarea
-            placeholder="Add context for AI summary. For example people involved, meeting overview, objective etc..."
-            className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm min-h-[80px] resize-y"
-            value={customPrompt}
-            onChange={(e) => onPromptChange(e.target.value)}
-          />
-        </div>
-      )}
     </div>
   );
 }

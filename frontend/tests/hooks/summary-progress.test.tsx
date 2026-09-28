@@ -1,0 +1,42 @@
+import { afterAll, afterEach, expect, mock, test } from 'bun:test';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import type { SummaryProgress } from '../../src/hooks/useSummaryProgress';
+const core = { ...await import('@tauri-apps/api/core') };
+const events = { ...await import('@tauri-apps/api/event') };
+const readers: ((value: SummaryProgress | null) => void)[] = [];
+let listener: (event: any) => void;
+let unlistened = 0;
+mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: () => new Promise(resolve => readers.push(resolve as any)) }));
+mock.module('@tauri-apps/api/event', () => ({ ...events, listen: async (_: string, handler: any) => { listener = handler; return () => { unlistened++; }; } }));
+const { useSummaryProgress, applySummaryEvent } = await import('../../src/hooks/useSummaryProgress');
+let current: SummaryProgress | null, renderer: ReactTestRenderer;
+const state = (job_id = 'a', seq = 1): SummaryProgress => ({ job_id, seq, phase: 'recording_note', current: { request_id: 'r1', stage: 'recording_note', draft: '开始' } });
+function Probe({ id }: { id: string }) { current = useSummaryProgress(id); return null; }
+afterEach(async () => { if (renderer) await act(async () => renderer.unmount()); readers.length = 0; });
+afterAll(() => { mock.module('@tauri-apps/api/core', () => core); mock.module('@tauri-apps/api/event', () => events); });
+
+test('duplicate, late, mismatched request and other-meeting deltas do not alter the panel', () => {
+  const before = state();
+  for (const event of [
+    { job_id: 'b', seq: 2, request_id: 'r1' }, { job_id: 'a', seq: 1, request_id: 'r1' },
+    { job_id: 'a', seq: 2, request_id: 'old' }, { job_id: 'a', seq: 3, request_id: 'r1' },
+  ]) expect(applySummaryEvent(before, { ...event, phase: '', kind: 'delta', text: '迟到' })).toBe(before);
+  expect(applySummaryEvent(before, { job_id: 'a', seq: 2, phase: '', kind: 'delta', request_id: 'r1', text: '正文' })?.current?.draft).toBe('开始正文');
+});
+test('an event between subscription and snapshot load is preserved', async () => {
+  await act(async () => { renderer = create(<Probe id="meeting-a" />); });
+  await act(async () => {
+    listener({ payload: { job_id: 'a', seq: 2, kind: 'delta', request_id: 'r1', text: '正文' } });
+    readers.shift()!(state());
+  });
+  expect(current?.current?.draft).toBe('开始正文');
+});
+test('switching meetings ignores a stale snapshot and unsubscribes the old listener', async () => {
+  await act(async () => { renderer = create(<Probe id="meeting-a" />); });
+  const old = readers.shift()!;
+  await act(async () => renderer.update(<Probe id="meeting-b" />));
+  await act(async () => { readers.shift()!(state('b')); old(state('a')); });
+  expect(current?.job_id).toBe('b'); expect(unlistened).toBeGreaterThan(0);
+  await act(async () => listener({ payload: { job_id: 'a', seq: 99, kind: 'snapshot', current: { draft: '旧会' } } }));
+  expect(current?.job_id).toBe('b');
+});

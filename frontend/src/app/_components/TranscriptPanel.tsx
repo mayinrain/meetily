@@ -64,27 +64,14 @@ export function TranscriptPanel({
                     variant="outline"
                     size="sm"
                     onClick={copyTranscript}
-                    title="Copy Transcript"
+                    title="复制转写"
                   >
                     <Copy />
                     <span className='hidden md:inline'>
-                      Copy
+                      复制
                     </span>
                   </Button>
                 )}
-                {transcriptModelConfig.provider === "localWhisper" &&
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => showModal('languageSettings')}
-                    title="Language"
-                  >
-                    <GlobeIcon />
-                    <span className='hidden md:inline'>
-                      Language
-                    </span>
-                  </Button>
-                }
               </ButtonGroup>
             </div>
           </div>
@@ -109,18 +96,10 @@ export function TranscriptPanel({
       {speakers?.status === 'running' && !speakers.result && <p role="status" className="px-4 text-sm text-gray-500">
         正在积累声纹，完整语音批次处理后显示说话人。
       </p>}
-      {speakers?.summary && <p role="status" className="px-4 text-sm text-gray-500">
-        {speakers.summary.error
-          ? '分段摘要已停止，已完成内容和原始转写已保留。'
-          : speakers.summary.workflow === 'section-notes-v1'
-            ? `已生成 ${speakers.summary.completed_notes ?? 0} 份分段笔记，待整理 ${speakers.summary.pending_characters ?? 0} 字。`
-            : `分段纪要已完成 ${speakers.summary.completed_batches} 批，待处理 ${speakers.summary.queued_batches} 批${speakers.summary.failed_batches ? `，失败 ${speakers.summary.failed_batches} 批` : ''}。`}
-      </p>}
-
       {/* Transcript content */}
-      <div className="flex-1 min-h-0 pb-20">
+      <div className="flex-1 min-h-0 pb-4">
         <div className="flex h-full min-h-0 justify-center">
-          <div className="w-2/3 h-full min-h-0 max-w-[750px]">
+          <div className="w-full px-5 h-full min-h-0 max-w-[750px]">
             <VirtualizedTranscriptView
               segments={segments}
               isRecording={isRecording}

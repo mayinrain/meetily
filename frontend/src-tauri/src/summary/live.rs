@@ -3,7 +3,8 @@ use std::{collections::HashMap, io::{BufWriter, Write}, path::{Path, PathBuf}, p
     sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
-use tauri::Manager;
+use tauri::{Manager, Emitter};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::ChildStdin;
 use crate::database::repositories::{meeting::MeetingsRepository, setting::SettingsRepository,
     summary::SummaryProcessesRepository};
@@ -14,6 +15,7 @@ struct Session {
     directory: PathBuf, alive: Arc<AtomicBool>, stopped_at: Option<i64>, snapshot: Value,
     // Closing stdin on application exit also stops the worker and its model child.
     _stdin: Option<ChildStdin>,
+    progress: Value,
 }
 static SESSIONS: LazyLock<Mutex<HashMap<String, Session>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -76,6 +78,7 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -
     SESSIONS.lock().unwrap().insert(job_id.into(), Session {
         directory: directory.clone(), alive: alive.clone(), stopped_at: None,
         snapshot: json!({"status":"running"}), _stdin: None,
+        progress: json!({"seq":0,"phase":"waiting_transcripts","current":null,"notes":[],"chapters":[]}),
     });
     let result: Result<(), String> = async {
         if busy || super::service::SummaryService::has_active_summary() {
@@ -92,7 +95,7 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -
         for (name, source) in [source!("live.mjs"), source!("round.mjs"), source!("runtime.mjs"),
             source!("prompt.mjs"), source!("facts.mjs"), source!("text-facts.mjs"),
             source!("workflow-submissions.mjs"), source!("relevant-memory.mjs"),
-            source!("sections.mjs"), source!("generation.mjs"),
+            source!("sections.mjs"), source!("generation.mjs"), source!("progress.mjs"),
             source!("runtime-openvino.mjs"), source!("openvino-server.py")] {
             std::fs::write(directory.join("runtime").join(name), source).map_err(|e| e.to_string())?;
         }
@@ -104,13 +107,31 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -
         let mut command = tokio::process::Command::new(node);
         command.arg(directory.join("runtime/live.mjs")).arg(&directory)
             .env("MEETILY_WORKFLOW_SERVER", server).env("MEETILY_WORKFLOW_MODEL", model)
-            .stdin(Stdio::piped()).stdout(Stdio::null())
+            .stdin(Stdio::piped()).stdout(Stdio::piped())
             .stderr(std::fs::File::create(directory.join("worker.stderr.log")).map_err(|e| e.to_string())?);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
         let mut child = command.spawn().map_err(|e| e.to_string())?;
         alive.store(true, Ordering::SeqCst);
         SESSIONS.lock().unwrap().get_mut(job_id).unwrap()._stdin = child.stdin.take();
+        let stdout = child.stdout.take().ok_or("Missing summary progress pipe")?;
+        let progress_app = app.clone();
+        let progress_job = job_id.to_owned();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(mut event) = serde_json::from_str::<Value>(&line) else { continue };
+                let accepted = {
+                    let mut sessions = SESSIONS.lock().unwrap();
+                    let Some(session) = sessions.get_mut(&progress_job) else { break };
+                    apply_progress(&mut session.progress, &event)
+                };
+                if accepted {
+                    event["job_id"] = json!(progress_job);
+                    let _ = progress_app.emit("meeting-summary-progress", event);
+                }
+            }
+        });
         let folder = directory.clone();
         tokio::spawn(async move {
             let result = loop {
@@ -138,6 +159,72 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -
             "completed_batches":0,"queued_batches":0}))?;
     }
     result
+}
+
+fn apply_progress(snapshot: &mut Value, event: &Value) -> bool {
+    if snapshot["phase"] == "completed" { return false; }
+    let seq = event["seq"].as_u64().unwrap_or(0);
+    if seq <= snapshot["seq"].as_u64().unwrap_or(0) { return false; }
+    if event["kind"] == "snapshot" { *snapshot = event.clone(); }
+    else if event["kind"] == "delta" {
+        if seq != snapshot["seq"].as_u64().unwrap_or(0) + 1
+            || event["request_id"] != snapshot["current"]["request_id"] { return false; }
+        let mut draft = snapshot["current"]["draft"].as_str().unwrap_or("").to_owned();
+        draft.push_str(event["text"].as_str().unwrap_or(""));
+        snapshot["current"]["draft"] = json!(draft);
+        snapshot["seq"] = json!(seq);
+    } else { return false; }
+    true
+}
+
+fn finish_progress<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str, error: Option<&str>) {
+    let value = {
+        let mut sessions = SESSIONS.lock().unwrap();
+        let Some(session) = sessions.get_mut(job_id) else { return };
+        session.progress["seq"] = json!(session.progress["seq"].as_u64().unwrap_or(0) + 1);
+        session.progress["phase"] = json!(if error.is_some() { "failed" } else { "completed" });
+        session.progress["current"] = Value::Null;
+        session.progress["error"] = json!(error);
+        session.progress["job_id"] = json!(job_id);
+        session.progress["kind"] = json!("snapshot");
+        session.progress.clone()
+    };
+    let _ = app.emit("meeting-summary-progress", value);
+}
+
+#[tauri::command]
+pub async fn get_summary_progress(state: tauri::State<'_, crate::state::AppState>, meeting_id: Option<String>) -> Result<Option<Value>, String> {
+    let pool = state.db_manager.pool();
+    let saved_manifest = if let Some(id) = &meeting_id { manifest(pool, id).await? } else { None };
+    let job = if meeting_id.is_some() {
+        saved_manifest.as_ref().and_then(|m| m["job_id"].as_str()).map(str::to_owned)
+    } else { crate::live_speakers::recording_job_id() };
+    let Some(job_id) = job else { return Ok(None) };
+    let memory = SESSIONS.lock().unwrap().get(&job_id).map(|s| (s.progress.clone(), s.directory.clone(), s.alive.load(Ordering::SeqCst)));
+    let known_session = memory.is_some();
+    let (mut value, directory, alive) = if let Some(value) = memory { value }
+    else {
+        let directory = PathBuf::from(saved_manifest.as_ref().and_then(|m| m["run_directory"].as_str()).ok_or("Missing summary directory")?);
+        (read(&directory.join("progress.json")).unwrap_or(json!({"seq":0,"phase":"failed"})), directory, false)
+    };
+    if let Some(id) = &meeting_id {
+        if let Some(saved) = SummaryProcessesRepository::get_summary_data(pool, id).await.map_err(|e| e.to_string())? {
+            if saved.status == "completed" { value["phase"] = json!("completed"); value["current"] = Value::Null; }
+            else if saved.status == "failed" { value["phase"] = json!("failed"); }
+        }
+    }
+    if value["phase"] != "completed" {
+        if let Ok(worker) = read(&directory.join("state.json")) {
+            if worker["status"] == "failed" {
+                value["phase"] = json!("failed"); value["error"] = worker["error"].clone(); value["current"] = Value::Null;
+            } else if !alive && (worker["status"] != "ready" || !known_session) {
+                value["phase"] = json!("failed"); value["error"] = json!("总结任务已停止，原始转写和已完成笔记已保留。"); value["current"] = Value::Null;
+            }
+        }
+    }
+    value["job_id"] = json!(job_id);
+    value["meeting_id"] = json!(meeting_id);
+    Ok(Some(value))
 }
 
 fn send(session: &Session) -> Result<(), String> {
@@ -256,7 +343,7 @@ async fn save_report(pool: &SqlitePool, meeting_id: &str, started: chrono::DateT
 
 #[tauri::command]
 pub async fn finalize_recording_summary<R: tauri::Runtime>(
-    _app: tauri::AppHandle<R>, state: tauri::State<'_, crate::state::AppState>, meeting_id: String,
+    app: tauri::AppHandle<R>, state: tauri::State<'_, crate::state::AppState>, meeting_id: String,
 ) -> Result<bool, String> {
     let _start_guard = super::commands::SUMMARY_START_LOCK.lock().await;
     let pool = state.db_manager.pool().clone();
@@ -285,6 +372,7 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
                 match value["status"].as_str() {
                     Some("ready") => {
                         save_report(&pool, &meeting_id, started, &value).await?;
+                        finish_progress(&app, &job_id, None);
                         return Ok(());
                     }
                     Some("failed") => return Err(value["error"].as_str().unwrap_or("Incremental summaries are incomplete").into()),
@@ -298,6 +386,7 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
         }.await;
         if let Err(error) = result {
             let _ = SummaryProcessesRepository::update_process_failed(&pool, &meeting_id, started, &error).await;
+            finish_progress(&app, &job_id, Some(&error));
         }
         super::service::SummaryService::cleanup_cancellation_token(&meeting_id, started);
     });
@@ -307,6 +396,17 @@ pub async fn finalize_recording_summary<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn progress_rejects_duplicate_and_stale_requests_and_preserves_drafts() {
+        let mut snapshot = json!({"seq":1,"phase":"recording_note","current":{"request_id":"a","draft":"甲"}});
+        assert!(!apply_progress(&mut snapshot, &json!({"kind":"delta","seq":1,"request_id":"a","text":"重复"})));
+        assert!(!apply_progress(&mut snapshot, &json!({"kind":"delta","seq":2,"request_id":"old","text":"旧请求"})));
+        assert!(apply_progress(&mut snapshot, &json!({"kind":"delta","seq":2,"request_id":"a","text":"乙"})));
+        assert_eq!(snapshot["current"]["draft"], "甲乙");
+        assert!(apply_progress(&mut snapshot, &json!({"kind":"snapshot","seq":3,"phase":"saving","current":null})));
+        snapshot["phase"] = json!("completed");
+        assert!(!apply_progress(&mut snapshot, &json!({"kind":"snapshot","seq":4,"phase":"recording_note"})));
+    }
     #[test]
     fn large_snapshot_is_published_completely_and_replaces_previous_revision() {
         let directory = tempfile::tempdir().unwrap();

@@ -16,7 +16,7 @@ export function useMeetingOperations({
       await invokeTauri('open_meeting_folder', { meetingId: meeting.id });
     } catch (error) {
       console.error('Failed to open meeting folder:', error);
-      toast.error(error as string || 'Failed to open recording folder');
+      toast.error('无法打开录音文件夹，请检查路径和访问权限');
     }
   }, [meeting.id]);
 

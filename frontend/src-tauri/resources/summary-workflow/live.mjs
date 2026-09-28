@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { sourceRows } from './round.mjs';
 import { startModel } from './runtime.mjs';
 import { createGenerator } from './generation.mjs';
+import { createProgress, ranges, joinMaterials, materialRanges } from './progress.mjs';
 import { sections, planChunk, slices, formatSources, chunkTokens, sectionTokens, sectionPromptTokens, directTokens,
   chunkSystem, directSystem, chunkPrompt, sectionPrompt, sectionMaterials,
   renderNotes, renderSections, extractSections, splitMaterial, reduceSection } from './sections.mjs';
@@ -58,7 +59,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
     const file = fs.existsSync(native) ? native : path.join(directory, 'openvino-memory.json');
     return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).available_bytes : os.freemem();
   },
-    drainMs = 1800000, pollMs = 250 } = {}) {
+    drainMs = 1800000, pollMs = 250, onProgress = () => {} } = {}) {
   const began = Date.now(), abort = new AbortController();
   const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
   const state = { workflow: 'section-notes-v1',
@@ -69,10 +70,11 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
     minimum_available_bytes: null, stopped_at: null, observed_segments: 0, semantic_quality_verified: false,
     post_stop_target_seconds: 120, maximum_pending_characters: 0, final_report_complete: false };
   let desired = [], rows = [], finalInput = false, model, generator, active = false, lastInbox = '', maximumPublished = 0;
-  let activeChunk, chunkFailureAt = -1;
+  let activeChunk, chunkFailureAt = -1, requestNumber = 0, lastPersist = 0;
+  const progress = createProgress(directory, writeJson, onProgress);
   const events = path.join(directory, 'events.jsonl');
   const log = (type, data = {}) => fs.appendFileSync(events, JSON.stringify({ elapsed_s: (Date.now() - began) / 1000, type, ...data }) + '\n');
-  const persist = () => {
+  const persist = (force = true) => {
     let chars = 0, completeRows = 0;
     for (const row of rows) { chars += row.text.length; if (chars <= state.cursor) completeRows++; }
     let batchEnd = 0;
@@ -90,7 +92,17 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
     state.maximum_pending_characters = Math.max(state.maximum_pending_characters, state.pending_characters);
     state.active = active;
     if (!state.final_report_complete) state.markdown = renderNotes(state.notes);
-    writeJson(path.join(directory, 'state.json'), state);
+    if (force || Date.now() - lastPersist >= 2000) {
+      writeJson(path.join(directory, 'state.json'), state); lastPersist = Date.now();
+    }
+    const covered = rows.slice(0, completeRows).at(-1)?.end || 0;
+    const phase = active ? progress.state.phase : state.status === 'failed' ? 'failed'
+      : state.status === 'ready' ? 'saving' : !state.recording_active && !finalInput ? 'waiting_final_transcripts'
+      : finalInput ? 'preparing_sections' : chunkFailureAt === state.cursor ? 'note_failed' : rows.length ? 'collecting' : 'waiting_transcripts';
+    if (progress.state.phase !== phase || progress.state.queued_batches !== state.queued_batches
+        || progress.state.covered_through !== covered || progress.state.completed_notes !== state.notes.length)
+      progress.update({ phase, queued_batches: state.queued_batches, covered_through: covered,
+        completed_notes: state.notes.length, notes: state.notes });
   };
   const poll = () => {
     try {
@@ -127,30 +139,39 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
       }
       if (state.stopped_at && Date.now() - state.stopped_at >= drainMs)
         throw new Error(`Summary exceeded experiment limit (${drainMs / 1000} seconds)`);
-      persist();
+      persist(false);
     } catch (error) { abort.abort(error); }
   };
   persist(); poll();
   const timer = setInterval(poll, pollMs);
   async function ensureModel() {
     if (!model) {
+      progress.update({ phase: 'preparing_model' });
       model = await modelFactory(directory, combined);
       if (model.id) state.model = model.id;
-      generator = createGenerator({ base: model.base, modelId: model.id, directory, writeJson, log, signal: combined });
+      generator = createGenerator({ base: model.base, modelId: model.id, directory, writeJson, log, signal: combined, onText: text => progress.text(text) });
     }
   }
-  async function generate(stage, system, user, tokens, signal = combined) {
-    await ensureModel();
-    active = true; state.phase = stage; persist();
-    try { return await generator.generate(stage, system, user, tokens,
-      AbortSignal.any([signal, AbortSignal.timeout(600000)])); }
-    finally { active = false; persist(); }
+  async function generate(stage, system, user, tokens, signal = combined, source = {}) {
+    active = true;
+    progress.update({ phase: 'preparing_model', current: { request_id: String(++requestNumber), stage, draft: '', ...source }, error: null });
+    try {
+      await ensureModel();
+      state.phase = stage; progress.update({ phase: stage }); persist();
+      return await generator.generate(stage, system, user, tokens,
+        AbortSignal.any([signal, AbortSignal.timeout(600000)]));
+    } catch (error) {
+      // A cancelled/failed fragment is never included in completed notes or chapters.
+      progress.update({ current: null, error: signal.aborted ? null : String(error) });
+      throw error;
+    } finally { active = false; }
   }
   function saveNote(content, start, end, elapsed, duringRecording) {
     state.notes.push({ content, start, end, elapsed_s: elapsed,
       completed_during_recording: duringRecording,
-      sources: slices(rows, start, end).map(r => ({ id: r.id, from: r.from, to: r.to })) });
-    state.cursor = end; persist();
+      ranges: ranges(slices(rows, start, end)),
+      sources: slices(rows, start, end).map(r => ({ id: r.id, from: r.from, to: r.to, audio_start_time: r.start, audio_end_time: r.end })) });
+    state.cursor = end; progress.update({ current: null }); persist();
     log('note_saved', { index: state.notes.length - 1, start, end, during_recording: duringRecording });
   }
   try {
@@ -165,7 +186,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
       const started = Date.now(); activeChunk = new AbortController();
       try {
         const content = await generate('recording_note', chunkSystem, chunkPrompt(chunk.material, chunk.buffer),
-          chunkTokens, AbortSignal.any([combined, activeChunk.signal]));
+          chunkTokens, AbortSignal.any([combined, activeChunk.signal]), { ranges: ranges(slices(rows, chunk.start, chunk.end)) });
         combined.throwIfAborted();
         activeChunk.signal.throwIfAborted();
         saveNote(content, chunk.start, chunk.end, (Date.now() - started) / 1000, true);
@@ -175,6 +196,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
           // A failed chunk never advances the cursor. Finalization still sees its full source.
           chunkFailureAt = state.cursor;
           state.recording_note_failures = (state.recording_note_failures || 0) + 1;
+          progress.update({ phase: 'note_failed', error: String(error) });
           log('note_failed', { cursor: state.cursor, error: String(error) });
         }
       } finally { activeChunk = null; }
@@ -186,37 +208,72 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
     } else if (state.notes.length < 2 || formatSources(rows).length <= 1200) {
       state.route = 'direct';
       const content = await generate('direct_final', directSystem,
-        `<完整会议转写>\n${formatSources(rows)}\n</完整会议转写>`, directTokens);
+        `<完整会议转写>\n${formatSources(rows)}\n</完整会议转写>`, directTokens, combined, { whole_meeting: true, ranges: ranges(rows) });
       const parsed = extractSections(content);
       if (!parsed.size) parsed.set(sections[0], content);
       state.markdown = renderSections(parsed); state.cursor = total;
     } else {
-      state.route = 'section_wise'; await ensureModel();
-      const tailStart = state.cursor, tail = formatSources(slices(rows, tailStart));
+      state.route = 'section_wise'; active = true; await ensureModel(); active = false;
+      const tailStart = state.cursor, tailRows = slices(rows, tailStart), tail = formatSources(tailRows);
       if (tail) {
+        // Mirror formatSources' turn joins while retaining ASR provenance.
+        const turns = [];
+        for (const row of tailRows) {
+          const label = row.uncertain || row.speakers.length !== 1 ? '待确认' : `发言人${row.speakers[0]}`;
+          if (label !== '待确认' && turns.at(-1)?.label === label) turns.at(-1).rows.push(row);
+          else turns.push({ label, rows: [row] });
+        }
+        const entries = turns.flatMap((turn, i) => turn.rows.map((row, j) => ({
+          text: (j === 0 ? (i ? '\n' : '') + turn.label + '：' : '') + row.text,
+          ranges: ranges([row]) })));
+        const mapped = joinMaterials(entries, '');
+        if (mapped.text !== tail) throw new Error('Tail provenance mismatch');
         const parts = await splitMaterial(tail, part => generator.fits(chunkSystem, chunkPrompt(part), chunkTokens));
-        const contents = [], started = Date.now();
-        for (const part of parts) contents.push(await generate('tail_note', chunkSystem, chunkPrompt(part), chunkTokens));
-        // The tail cursor is committed only after every part succeeded; per-call checkpoints allow reuse.
-        for (const content of contents) state.notes.push({ content, start: tailStart, end: total,
-          completed_during_recording: false, elapsed_s: (Date.now() - started) / 1000, tail_part: true });
-        state.cursor = total; persist();
+        const notes = [], started = Date.now(); let offset = 0;
+        for (const [index, part] of parts.entries()) {
+          const source = materialRanges(mapped, offset, offset + part.length); offset += part.length;
+          const content = await generate('tail_note', chunkSystem, chunkPrompt(part), chunkTokens, combined,
+            { ranges: source, group: index + 1, groups: parts.length });
+          notes.push({ content, start: tailStart, end: total, ranges: source,
+            completed_during_recording: false, elapsed_s: (Date.now() - started) / 1000, tail_part: true });
+        }
+        // Commit the source cursor only after all tail groups succeeded.
+        state.notes.push(...notes); state.cursor = total; progress.update({ current: null }); persist();
       }
-      const materials = sectionMaterials(state.notes), final = new Map();
+      const final = new Map();
       for (const section of sections) {
-        const material = materials.get(section).join('\n\n');
-        let content = '未提及';
-        if (material) content = await reduceSection(material,
-          part => { const p = sectionPrompt(section, part); return generator.fits(p.system, p.user, sectionTokens, sectionPromptTokens); },
-          part => { const p = sectionPrompt(section, part); return generate(`section:${section}`, p.system, p.user, sectionTokens); });
-        final.set(section, content); state.final_sections[section] = content; persist();
+        const entries = state.notes.flatMap(note => {
+          const parsed = extractSections(note.content);
+          const text = parsed.size ? parsed.get(section) : section === sections[0] ? note.content : '';
+          return text && text !== '未提及' ? [{ text, ranges: note.ranges }] : [];
+        });
+        const mapped = joinMaterials(entries), outputs = [];
+        if (mapped.text) {
+          const parts = await splitMaterial(mapped.text, part => {
+            const p = sectionPrompt(section, part);
+            return generator.fits(p.system, p.user, sectionTokens, sectionPromptTokens);
+          });
+          let offset = 0;
+          for (const [index, part] of parts.entries()) {
+            const source = materialRanges(mapped, offset, offset + part.length); offset += part.length;
+            const p = sectionPrompt(section, part);
+            outputs.push(await generate(`section:${section}`, p.system, p.user, sectionTokens, combined,
+              { section, group: index + 1, groups: parts.length, ranges: source }));
+          }
+        }
+        const content = outputs.join('\n\n') || '未提及';
+        final.set(section, content); state.final_sections[section] = content;
+        progress.update({ current: null, completed_sections: final.size,
+          chapters: [...final].map(([title, content]) => ({ title, content })) }); persist();
       }
       state.markdown = renderSections(final);
     }
     combined.throwIfAborted();
     state.final_report_complete = true; state.status = 'ready'; state.phase = 'complete';
+    progress.update({ current: null, phase: 'saving', draft: state.markdown });
   } catch (error) {
     state.status = 'failed'; state.error = String(abort.signal.reason || error); state.failed_batches++;
+    progress.update({ current: null, phase: 'failed', error: state.error });
   } finally {
     clearInterval(timer);
     if (model) await model.stop();
@@ -224,7 +281,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
     state.settled_seconds_after_stop = state.stopped_at ? (Date.now() - state.stopped_at) / 1000 : null;
     state.within_post_stop_target = state.status === 'ready' && state.settled_seconds_after_stop !== null && state.settled_seconds_after_stop <= 120;
     state.worker_elapsed_s = (Date.now() - began) / 1000;
-    persist(); log('finished', { status: state.status, error: state.error });
+    persist(); progress.close(); log('finished', { status: state.status, error: state.error });
   }
   return state;
 }
@@ -236,7 +293,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   process.stdin.resume();
   process.stdin.on('end', () => controller.abort(new Error('Application disconnected')));
   for (const event of ['SIGINT', 'SIGTERM']) process.on(event, () => controller.abort(new Error('Recording summary cancelled')));
-  const state = await runLive(directory, { signal: controller.signal });
+  const state = await runLive(directory, { signal: controller.signal,
+    onProgress: value => process.stdout.write(JSON.stringify(value) + '\n') });
   process.stdin.destroy();
   process.exitCode = state.status === 'ready' ? 0 : 1;
 }

@@ -26,7 +26,7 @@ const TranscriptContext = createContext<TranscriptContextType | undefined>(undef
 
 export function TranscriptProvider({ children }: { children: ReactNode }) {
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
-  const [meetingTitle, setMeetingTitle] = useState('+ New Call');
+  const [meetingTitle, setMeetingTitle] = useState('');
   const [currentMeetingId, setCurrentMeetingId] = useState<string | null>(null);
 
   // Recording state context - provides backend-synced state
@@ -106,7 +106,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             const meetingName = await recordingService.getRecordingMeetingName();
 
             // Use a better fallback that matches the backend's naming pattern
-            const effectiveTitle = meetingName || `Meeting ${new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-')}`;
+            const effectiveTitle = meetingName || `会议 ${new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-')}`;
 
             // Initialize meeting metadata in IndexedDB
             await indexedDBService.saveMeetingMetadata({
@@ -469,7 +469,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       .join('\n');
     navigator.clipboard.writeText(fullTranscript);
 
-    toast.success("Transcript copied to clipboard");
+    toast.success("转写已复制");
   }, [transcripts]);
 
   // Force flush buffer (for final transcript processing)

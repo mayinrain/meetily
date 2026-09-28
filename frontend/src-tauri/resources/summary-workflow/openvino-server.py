@@ -78,6 +78,7 @@ def main():
             self.reply(200 if self.path == '/health' else 404, {'model': model_id, 'device': args.device})
 
         def do_POST(self):
+            streaming = False
             try:
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 if self.path == '/apply-template':
@@ -101,21 +102,41 @@ def main():
                 config.rng_seed = body['seed']
                 config.apply_chat_template = False
                 config.ignore_eos = False
-                if body['min_p'] != 0 or body['repeat_penalty'] != 1 or body['stream']:
+                if body['min_p'] != 0 or body['repeat_penalty'] != 1:
                     raise ValueError('Probe only supports the established summary sampling profile')
                 config.validate()
                 start = time.monotonic()
-                def cancelled(_text):
+                if body['stream']:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.send_header('Connection', 'close')
+                    self.end_headers()
+                    streaming = True
+                def event(data):
+                    encoded = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+                    self.wfile.write(('data: ' + encoded + '\n\n').encode('utf-8'))
+                    self.wfile.flush()
+
+                disconnected = False
+                def cancelled(text):
+                    nonlocal disconnected
                     if time.monotonic()-start >= 600:
                         return True
                     # Stop a discarded recording note before the final-tail request starts.
                     try:
                         readable, _, _ = select.select([self.connection], [], [], 0)
-                        return bool(readable) and not self.connection.recv(1, socket.MSG_PEEK)
+                        disconnected = bool(readable) and not self.connection.recv(1, socket.MSG_PEEK)
+                        if not disconnected and streaming and text:
+                            event({'choices': [{'delta': {'content': text}, 'finish_reason': None}]})
+                        return disconnected
                     except OSError:
+                        disconnected = True
                         return True
 
                 result = pipe.generate(inputs, config, cancelled)
+                if disconnected:
+                    return
                 if time.monotonic()-start >= 600:
                     raise TimeoutError('Generation exceeded 600 seconds')
                 metrics = result.perf_metrics
@@ -128,9 +149,19 @@ def main():
                                       'completion_tokens': metrics.get_num_generated_tokens()},
                             'timings': {'elapsed_s': time.monotonic()-start, 'ttft_ms': metrics.get_ttft().mean,
                                         'tpot_ms': metrics.get_tpot().mean, 'tokens_per_second': metrics.get_throughput().mean}}
-                self.reply(200, response)
+                if streaming:
+                    event(response)
+                    event('[DONE]')
+                else:
+                    self.reply(200, response)
             except Exception as error:
-                self.reply(500, {'error': repr(error)})
+                try:
+                    if streaming:
+                        event({'error': repr(error)})
+                    else:
+                        self.reply(500, {'error': repr(error)})
+                except OSError:
+                    pass  # The cancelled client has already closed its connection.
 
     server = HTTPServer(('127.0.0.1', 0), Handler)
     write(args.directory / 'openvino-server.json', {'pid': process.pid, 'base': f'http://127.0.0.1:{server.server_port}',

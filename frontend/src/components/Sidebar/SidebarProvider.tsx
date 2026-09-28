@@ -76,8 +76,8 @@ export const useSidebar = () => {
 };
 
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
-  const [currentMeeting, setCurrentMeeting] = useState<CurrentMeeting | null>({ id: 'intro-call', title: '+ New Call' });
-  const [isCollapsed, setIsCollapsed] = useState(true);
+  const [currentMeeting, setCurrentMeeting] = useState<CurrentMeeting | null>({ id: 'intro-call', title: '开始会议' });
+  const [isCollapsed, setIsCollapsed] = useState(false);
   const [meetings, setMeetings] = useState<CurrentMeeting[]>([]);
   const [sidebarItems, setSidebarItems] = useState<SidebarItem[]>([]);
   const [isMeetingActive, setIsMeetingActive] = useState(false);
@@ -143,7 +143,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   // Update current meeting when on home page
   useEffect(() => {
     if (pathname === '/') {
-      setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
+      setCurrentMeeting({ id: 'intro-call', title: '开始会议' });
     }
     setSidebarItems(baseItems);
   }, [pathname]);
@@ -175,7 +175,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Function to search through meeting transcripts
-  const searchTranscripts = async (query: string) => {
+  const searchTranscripts = React.useCallback(async (query: string) => {
     if (!query.trim()) {
       setSearchResults([]);
       return;
@@ -193,7 +193,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsSearching(false);
     }
-  };
+  }, []);
 
   // Summary polling management
   const stopSummaryPolling = React.useCallback((meetingId: string, processId?: string) => {

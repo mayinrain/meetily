@@ -250,7 +250,7 @@ export const BlockComponent: React.FC<BlockProps> = ({
             ${block.type === 'heading1' ? 'text-xl font-bold' : ''}
             ${block.type === 'heading2' ? 'text-lg font-semibold' : ''}
           `}
-          placeholder="Type '/' for commands..."
+          placeholder="输入“/”选择格式…"
         />
 
         {showCommands && (

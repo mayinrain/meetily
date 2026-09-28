@@ -255,7 +255,7 @@ export function useRecordingStop(
 
         try {
           const responseData = await storageService.saveMeeting(
-            savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
+            savedMeetingName || meetingTitle || '新会议',  // PREFER savedMeetingName (backend source)
             freshTranscripts,
             folderPath
           );
@@ -271,8 +271,8 @@ export function useRecordingStop(
             shouldDetectSummaryLanguage = !(await applyPinnedSummaryLanguageToMeeting(meetingId));
           } catch (error) {
             console.warn('Failed to apply pinned summary language preference for new meeting:', error);
-            toast.warning('Could not apply default summary language', {
-              description: 'The meeting was saved, but the default summary language was not applied.',
+            toast.warning('无法应用纪要语言', {
+              description: '会议已保存，纪要语言设置未能应用。',
             });
           }
 
@@ -284,8 +284,8 @@ export function useRecordingStop(
               );
             } catch (error) {
               console.warn('Failed to detect summary language for new meeting:', error);
-              toast.warning('Could not detect summary language', {
-                description: 'The meeting was saved, but Auto could not detect the summary language.',
+              toast.warning('无法识别纪要语言', {
+                description: '会议已保存，将使用默认语言。',
               });
             }
           }
@@ -324,17 +324,17 @@ export function useRecordingStop(
             }
           } catch (error) {
             console.warn('Could not fetch meeting details, using ID only:', error);
-            setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || 'New Meeting' });
+            setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || '新会议' });
           }
 
           // Mark as completed
           setStatus(RecordingStatus.COMPLETED);
 
           // Show success toast with navigation option
-          toast.success('Recording saved successfully!', {
-            description: `${freshTranscripts.length} transcript segments saved.`,
+          toast.success('会议已保存', {
+            description: `已保存 ${freshTranscripts.length} 段转写。`,
             action: {
-              label: 'View Meeting',
+              label: '查看会议',
               onClick: () => {
                 router.push(`/meeting-details?id=${meetingId}`);
                 Analytics.trackButtonClick('view_meeting_from_toast', 'recording_complete');
@@ -351,7 +351,7 @@ export function useRecordingStop(
 
             // Reset to IDLE after navigation
             setStatus(RecordingStatus.IDLE);
-          }, 2000);
+          }, 0);
           // Track meeting completion analytics
           try {
             // Calculate meeting duration from transcript timestamps
@@ -405,9 +405,9 @@ export function useRecordingStop(
 
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
-          setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
-          toast.error('Failed to save meeting', {
-            description: saveError instanceof Error ? saveError.message : 'Unknown error'
+          setStatus(RecordingStatus.ERROR, '请检查保存目录权限和可用空间，原始录音仍保留。');
+          toast.error('保存会议失败', {
+            description: '请检查保存目录权限和可用空间，原始录音仍保留。'
           });
           throw saveError;
         }
@@ -421,7 +421,7 @@ export function useRecordingStop(
       setIsRecordingDisabled(false);
     } catch (error) {
       console.error('Error in handleRecordingStop:', error);
-      setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Unknown error');
+      setStatus(RecordingStatus.ERROR, '会议收尾失败，请检查本地服务和保存目录后重试。');
       // isRecording already set to false at function start
       setIsRecordingDisabled(false);
     } finally {

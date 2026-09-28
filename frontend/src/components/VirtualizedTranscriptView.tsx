@@ -92,7 +92,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
             <div className="flex items-start gap-2">
                 <Tooltip>
                     <TooltipTrigger onClick={() => onSeek?.(timestamp)}
-                        aria-label={onSeek ? `Play from ${formatRecordingTime(timestamp)}` : undefined}>
+                        aria-label={onSeek ? `从 ${formatRecordingTime(timestamp)} 播放` : undefined}>
                         <span className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
                             {formatRecordingTime(timestamp)}
                         </span>
@@ -259,16 +259,16 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                 <div className={`w-3 h-3 rounded-full ${isPaused ? 'bg-orange-500' : 'bg-blue-500 animate-pulse'}`}></div>
                             </div>
                             <p className="text-sm text-gray-600">
-                                {isPaused ? 'Recording paused' : 'Listening for speech...'}
+                                {isPaused ? '会议已暂停' : '正在等待发言…'}
                             </p>
                             <p className="text-xs mt-1 text-gray-400">
-                                {isPaused ? 'Click resume to continue recording' : 'Speak to see live transcription'}
+                                {isPaused ? '点击“继续会议”恢复录制' : '发言后，转写会显示在这里'}
                             </p>
                         </>
                     ) : (
                         <>
-                            <p className="text-lg font-semibold">Welcome to meetily!</p>
-                            <p className="text-xs mt-1">Start recording to see live transcription</p>
+                            <p className="text-lg font-semibold">会议转写</p>
+                            <p className="text-xs mt-1">开始会议后，转写内容会显示在这里。</p>
                         </>
                     )}
                 </motion.div>
@@ -320,7 +320,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                             {isLoadingMore ? (
                                 <div className="flex items-center gap-2 text-gray-500">
                                     <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
-                                    <span className="text-sm">Loading more...</span>
+                                    <span className="text-sm">正在加载更多…</span>
                                 </div>
                             ) : hasMore && totalCount > 0 ? (
                                 <span className="text-sm text-gray-400">
@@ -339,7 +339,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                             className="flex items-center gap-2 mt-4 text-gray-500"
                         >
                             <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                            <span className="text-sm">Listening...</span>
+                            <span className="text-sm">正在聆听…</span>
                         </motion.div>
                     )}
                 </>
@@ -378,7 +378,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                             {isLoadingMore ? (
                                 <div className="flex items-center gap-2 text-gray-500">
                                     <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
-                                    <span className="text-sm">Loading more...</span>
+                                    <span className="text-sm">正在加载更多…</span>
                                 </div>
                             ) : hasMore && totalCount > 0 ? (
                                 <span className="text-sm text-gray-400">
@@ -397,7 +397,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                             className="flex items-center gap-2 mt-4 text-gray-500"
                         >
                             <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                            <span className="text-sm">Listening...</span>
+                            <span className="text-sm">正在聆听…</span>
                         </motion.div>
                     )}
                 </>

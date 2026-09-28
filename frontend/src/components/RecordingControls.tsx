@@ -2,12 +2,10 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
-import { useCallback, useEffect, useState, useRef } from 'react';
-import { Play, Pause, Square, Mic, AlertCircle, X } from 'lucide-react';
-import { ProcessRequest, SummaryResponse } from '@/types/summary';
+import { useCallback, useEffect, useState } from 'react';
+import { Play, Pause, Square, Mic } from 'lucide-react';
+import { SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import Analytics from '@/lib/analytics';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { TranscriptionErrorPayload } from '@/services/transcriptService';
@@ -47,9 +45,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const isPaused = recordingState.isPaused;
   const isStartingRecording = recordingState.isStartingRecording;
 
-  const [showPlayback, setShowPlayback] = useState(false);
-  const [recordingPath, setRecordingPath] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -58,19 +53,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const MIN_RECORDING_DURATION = 2000; // 2 seconds minimum recording time
   const [transcriptionErrors, setTranscriptionErrors] = useState(0);
   const [isValidatingModel, setIsValidatingModel] = useState(false);
-  const [speechDetected, setSpeechDetected] = useState(false);
   const [deviceError, setDeviceError] = useState<{ title: string, message: string } | null>(null);
-
-  const currentTime = 0;
-  const duration = 0;
-  const isPlaying = false;
-  const progress = 0;
-
-  const formatTime = (time: number) => {
-    const minutes = Math.floor(time / 60);
-    const seconds = Math.floor(time % 60);
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-  };
 
   useEffect(() => {
     const checkTauri = async () => {
@@ -79,7 +62,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         console.log('Tauri is initialized and ready, is_recording result:', result);
       } catch (error) {
         console.error('Tauri initialization error:', error);
-        alert('Failed to initialize recording. Please check the console for details.');
+        alert('录音初始化失败，请检查本地音频服务后重试。');
       }
     };
     checkTauri();
@@ -92,9 +75,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     console.log('Meeting name:', meetingName);
     console.log('Current isRecording state:', isRecording);
 
-    setShowPlayback(false);
-    setTranscript(''); // Clear any previous transcript
-    setSpeechDetected(false); // Reset speech detection on new recording
 
     try {
       // Call the validation callback which will:
@@ -117,23 +97,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       // Check for device-related errors
       if (errorMsg.includes('microphone') || errorMsg.includes('mic') || errorMsg.includes('input')) {
         setDeviceError({
-          title: 'Microphone Not Available',
-          message: 'Unable to access your microphone. Please check that:\n• Your microphone is connected\n• The app has microphone permissions\n• No other app is using the microphone'
+          title: '麦克风不可用',
+          message: '无法访问麦克风。请检查：\n• 麦克风已连接\n• 已授予应用麦克风权限\n• 其他应用未独占麦克风'
         });
       } else if (errorMsg.includes('system audio') || errorMsg.includes('speaker') || errorMsg.includes('output')) {
         setDeviceError({
-          title: 'System Audio Not Available',
-          message: 'Unable to capture system audio. Please check that:\n• A virtual audio device (like BlackHole) is installed\n• The app has screen recording permissions (macOS)\n• System audio is properly configured'
+          title: '系统音频不可用',
+          message: '无法采集系统音频。请检查音频输出设备；macOS 需配置虚拟音频设备并授予屏幕录制权限。'
         });
       } else if (errorMsg.includes('permission')) {
         setDeviceError({
-          title: 'Permission Required',
-          message: 'Recording permissions are required. Please:\n• Grant microphone access in System Settings\n• Grant screen recording access for system audio (macOS)\n• Restart the app after granting permissions'
+          title: '需要录音权限',
+          message: '需要录音权限。请在系统设置中允许麦克风访问；macOS 录制系统音频还需屏幕录制权限。授权后重启应用。'
         });
       } else {
         setDeviceError({
-          title: 'Recording Failed',
-          message: 'Unable to start recording. Please check your audio device settings and try again.'
+          title: '录音失败',
+          message: '无法开始录音，请检查所选音频设备后重试。'
         });
       }
     }
@@ -154,7 +134,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         }
       });
       console.log('stop_recording command completed successfully:', result);
-      setRecordingPath(savePath);
+
       // setShowPlayback(true);
       setIsProcessing(false);
       // Track successful transcription
@@ -215,7 +195,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       console.log('Recording paused successfully');
     } catch (error) {
       console.error('Failed to pause recording:', error);
-      alert('Failed to pause recording. Please check the console for details.');
+      alert('暂停失败，请重试。');
     } finally {
       setIsPausing(false);
     }
@@ -233,7 +213,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       console.log('Recording resumed successfully');
     } catch (error) {
       console.error('Failed to resume recording:', error);
-      alert('Failed to resume recording. Please check the console for details.');
+      alert('继续会议失败，请重试。');
     } finally {
       setIsResuming(false);
     }
@@ -247,7 +227,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
   useEffect(() => {
     console.log('Setting up recording event listeners');
-    let unsubscribes: (() => void)[] = [];
+    const unsubscribes: (() => void)[] = [];
+    let disposed = false;
 
     const setupListeners = async () => {
       try {
@@ -272,6 +253,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             onTranscriptionError(errorMessage);
           }
         });
+
+        if (disposed) { transcriptErrorUnsubscribe(); return; }
+        unsubscribes.push(transcriptErrorUnsubscribe);
 
         // Transcription error listener - handles structured error objects with actionable flag
         const transcriptionErrorUnsubscribe = await listen<TranscriptionErrorPayload>('transcription-error', (event) => {
@@ -302,17 +286,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         // Pause/Resume events are now handled by RecordingStateContext
         // No need for duplicate listeners here
 
-        // Speech detected listener - for UX feedback when VAD detects speech
-        const speechDetectedUnsubscribe = await listen('speech-detected', (event) => {
-          console.log('speech-detected event received:', event);
-          setSpeechDetected(true);
-        });
-
-        unsubscribes = [
-          transcriptErrorUnsubscribe,
-          transcriptionErrorUnsubscribe,
-          speechDetectedUnsubscribe
-        ];
+        if (disposed) transcriptionErrorUnsubscribe();
+        else unsubscribes.push(transcriptionErrorUnsubscribe);
         console.log('Recording event listeners set up successfully');
       } catch (error) {
         console.error('Failed to set up recording event listeners:', error);
@@ -322,6 +297,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     setupListeners();
 
     return () => {
+      disposed = true;
       console.log('Cleaning up recording event listeners');
       unsubscribes.forEach(unsubscribe => {
         if (unsubscribe && typeof unsubscribe === 'function') {
@@ -331,194 +307,26 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     };
   }, [onRecordingStop, onTranscriptionError]);
 
-  return (
-    <TooltipProvider>
-      <div className="flex flex-col space-y-2">
-        <div className="flex items-center space-x-2 bg-white rounded-full shadow-lg px-4 py-2">
-          {isProcessing && !isParentProcessing ? (
-            <div className="flex items-center space-x-2">
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-900"></div>
-              <span className="text-sm text-gray-600">Processing recording...</span>
-            </div>
-          ) : (
-            <>
-              {showPlayback ? (
-                <>
-                  <button
-                    onClick={handleStartRecording}
-                    className="w-10 h-10 flex items-center justify-center bg-red-500 rounded-full text-white hover:bg-red-600 transition-colors"
-                  >
-                    <Mic size={16} />
-                  </button>
-
-                  <div className="w-px h-6 bg-gray-200 mx-1" />
-
-                  <div className="flex items-center space-x-1 mx-2">
-                    <div className="text-sm text-gray-600 min-w-[40px]">
-                      {formatTime(currentTime)}
-                    </div>
-                    <div
-                      className="relative w-24 h-1 bg-gray-200 rounded-full"
-                    >
-                      <div
-                        className="absolute h-full bg-blue-500 rounded-full"
-                        style={{ width: `${progress}%` }}
-                      />
-                    </div>
-                    <div className="text-sm text-gray-600 min-w-[40px]">
-                      {formatTime(duration)}
-                    </div>
-                  </div>
-
-                  <button
-                    className="w-10 h-10 flex items-center justify-center bg-gray-300 rounded-full text-white cursor-not-allowed"
-                    disabled
-                  >
-                    <Play size={16} />
-                  </button>
-                </>
-              ) : (
-                <>
-                  {!isRecording ? (
-                    // Start recording button
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          onClick={() => {
-                            Analytics.trackButtonClick('start_recording', 'recording_controls');
-                            handleStartRecording();
-                          }}
-                          disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel || isStartingRecording}
-                          className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing || isValidatingModel || isStartingRecording ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
-                            } rounded-full text-white transition-colors relative`}
-                        >
-                          {isValidatingModel || isStartingRecording ? (
-                            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                          ) : (
-                            <Mic size={20} />
-                          )}
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Start recording</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    // Recording controls (pause/resume + stop)
-                    <>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            onClick={() => {
-                              if (isPaused) {
-                                Analytics.trackButtonClick('resume_recording', 'recording_controls');
-                                handleResumeRecording();
-                              } else {
-                                Analytics.trackButtonClick('pause_recording', 'recording_controls');
-                                handlePauseRecording();
-                              }
-                            }}
-                            disabled={isPausing || isResuming || isStopping}
-                            className={`w-10 h-10 flex items-center justify-center ${isPausing || isResuming || isStopping
-                              ? 'bg-gray-200 border-2 border-gray-300 text-gray-400'
-                              : 'bg-white border-2 border-gray-300 text-gray-600 hover:border-gray-400 hover:bg-gray-50'
-                              } rounded-full transition-colors relative`}
-                          >
-                            {isPaused ? <Play size={16} /> : <Pause size={16} />}
-                            {(isPausing || isResuming) && (
-                              <div className="absolute -top-8 text-gray-600 font-medium text-xs">
-                                {isPausing ? 'Pausing...' : 'Resuming...'}
-                              </div>
-                            )}
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>{isPaused ? 'Resume recording' : 'Pause recording'}</p>
-                        </TooltipContent>
-                      </Tooltip>
-
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            onClick={() => {
-                              Analytics.trackButtonClick('stop_recording', 'recording_controls');
-                              handleStopRecording();
-                            }}
-                            disabled={isStopping || isPausing || isResuming || isStartingRecording}
-                            className={`w-10 h-10 flex items-center justify-center ${isStopping || isPausing || isResuming || isStartingRecording ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
-                              } rounded-full text-white transition-colors relative`}
-                          >
-                            <Square size={16} />
-                            {isStopping && (
-                              <div className="absolute -top-8 text-gray-600 font-medium text-xs">
-                                Stopping...
-                              </div>
-                            )}
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>Stop recording</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </>
-                  )}
-
-                  <div className="flex items-center space-x-1 mx-4">
-                    {barHeights.map((height, index) => (
-                      <div
-                        key={index}
-                        className={`w-1 rounded-full transition-all duration-200 ${isPaused ? 'bg-orange-500' : 'bg-red-500'
-                          }`}
-                        style={{
-                          height: isRecording && !isPaused ? height : '4px',
-                          opacity: isPaused ? 0.6 : 1,
-                        }}
-                      />
-                    ))}
-                  </div>
-                </>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* Show validation status only */}
-        {isValidatingModel && (
-          <div className="text-xs text-gray-600 text-center mt-2">
-            Validating speech recognition...
-          </div>
-        )}
-
-        {/* Device error alert */}
-        {deviceError && (
-          <Alert variant="destructive" className="mt-4 border-red-300 bg-red-50">
-            <AlertCircle className="h-5 w-5 text-red-600" />
-            <button
-              onClick={() => setDeviceError(null)}
-              className="absolute right-3 top-3 text-red-600 hover:text-red-800 transition-colors"
-              aria-label="Close alert"
-            >
-              <X className="h-4 w-4" />
-            </button>
-            <AlertTitle className="text-red-800 font-semibold mb-2">
-              {deviceError.title}
-            </AlertTitle>
-            <AlertDescription className="text-red-700">
-              {deviceError.message.split('\n').map((line, i) => (
-                <div key={i} className={i > 0 ? 'ml-2' : ''}>
-                  {line}
-                </div>
-              ))}
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {/* {showPlayback && recordingPath && (
-        <div className="text-sm text-gray-600 px-4">
-          Recording saved to: {recordingPath}
-        </div>
-      )} */}
-      </div>
-    </TooltipProvider>
-  );
+  return <div className="flex flex-col gap-2">
+    <div className="flex items-center gap-2">
+      {!isRecording ? <button onClick={handleStartRecording}
+        disabled={isStarting || isProcessing || isRecordingDisabled || isStartingRecording || isParentProcessing}
+        className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50">
+        <Mic size={16} />{isStartingRecording ? '正在开始…' : isParentProcessing ? '正在收尾…' : '开始会议'}
+      </button> : <>
+        <button onClick={isPaused ? handleResumeRecording : handlePauseRecording} disabled={isPausing || isResuming || isStopping}
+          className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-50">
+          {isPaused ? <Play size={16} /> : <Pause size={16} />}{isPausing ? '正在暂停…' : isResuming ? '正在继续…' : isPaused ? '继续会议' : '暂停'}
+        </button>
+        <button onClick={handleStopRecording} disabled={isStopping || isPausing || isResuming || isStartingRecording}
+          className="inline-flex items-center gap-2 rounded-md bg-red-600 px-3 py-2 text-sm text-white hover:bg-red-700 disabled:opacity-50">
+          <Square size={16} />{isStopping ? '正在结束…' : '结束会议'}
+        </button>
+      </>}
+    </div>
+    {deviceError && <div role="alert" className="rounded-md bg-red-50 p-3 text-sm text-red-800">
+      <p className="font-medium">{deviceError.title}</p><p className="whitespace-pre-wrap">{deviceError.message}</p>
+      <button className="mt-2 underline" onClick={() => setDeviceError(null)}>关闭提示</button>
+    </div>}
+  </div>;
 };

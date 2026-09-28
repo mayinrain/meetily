@@ -143,7 +143,7 @@ export function useModalState(transcriptModelConfig?: TranscriptModelProps): Use
           } else {
             // Show toast instead of modal for non-actionable errors (consistent with sidebar)
             toast.error('', {
-              description: userMessage,
+              description: /[\u4e00-\u9fff]/.test(userMessage) ? userMessage : '转写遇到问题，请检查音频设备和本地语音服务后重试。',
               duration: 5000,
             });
           }
@@ -176,7 +176,7 @@ export function useModalState(transcriptModelConfig?: TranscriptModelProps): Use
 
         // Auto-close modal if the downloaded model matches the selected one
         if (transcriptModelConfig?.provider === 'localWhisper' && transcriptModelConfig?.model === modelName) {
-          toast.success('Model ready! Closing window...', { duration: 1500 });
+          toast.success('语音模型已就绪', { duration: 1500 });
           setTimeout(() => hideModal('modelSelector'), 1500);
         }
       });

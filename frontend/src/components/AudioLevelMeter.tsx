@@ -65,7 +65,7 @@ export function AudioLevelMeter({
       {/* Device activity indicator */}
       <div className={`w-2 h-2 rounded-full ${
         isActive ? 'bg-green-400 animate-pulse' : 'bg-gray-300'
-      }`} title={`${deviceName} - ${isActive ? 'Active' : 'Inactive'}`} />
+      }`} title={`${deviceName} - ${isActive ? '有输入' : '无输入'}`} />
 
       {/* Level meter container */}
       <div className={`flex-1 ${sizes.container} relative`}>

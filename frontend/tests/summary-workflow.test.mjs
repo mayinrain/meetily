@@ -264,3 +264,30 @@ test('immutable speaker prefix, source coverage, duplicate IDs and changed label
   const missing = snapshot([b], true); missing.result.source_segments.push(row('missing', '尾句。'));
   assert.throws(() => validateSnapshot([], missing), /cover/);
 });
+
+
+test('live progress maps recording and chapter materials to ASR intervals without counting buffer', async t => {
+  const h = await harness(t, () => ({ text: note() }));
+  const first = batch(0, [row('a', long('甲'), 10, 20)]);
+  const second = batch(1, [row('b', long('乙'), 100, 120)]);
+  const events = [];
+  h.send(snapshot([first]));
+  const running = h.run({ onProgress: event => events.push(JSON.parse(JSON.stringify(event))) });
+  await until(() => h.state().notes.length === 1);
+  h.send(snapshot([first, second]));
+  await until(() => h.state().notes.length === 2);
+  h.send(snapshot([first, second], true));
+  const saved = await running;
+  assert.equal(saved.status, 'ready');
+  const recordings = events.filter(e => e.current?.stage === 'recording_note');
+  assert.deepEqual(recordings[0].current.ranges, [{ start: 10, end: 20 }]);
+  // A slice of an ASR row uses that row's boundaries, never interpolated word times.
+  assert.ok(recordings.some(e => e.current.ranges.some(r => r.start === 100 && r.end === 120)));
+  const chapters = events.filter(e => e.current?.section);
+  assert.ok(chapters.length > 0);
+  assert.ok(chapters.some(e => e.current.ranges.length === 2));
+  assert.ok(chapters.every(e => !e.current.ranges.some(r => r.start === 10 && r.end === 120)));
+  assert.equal(events.at(-1).phase, 'saving');
+  assert.equal(events.at(-1).covered_through, 120);
+  assert.ok(events.every(e => e.phase !== 'completed'));
+});

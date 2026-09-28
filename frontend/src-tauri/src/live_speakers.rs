@@ -228,6 +228,11 @@ pub fn get_recording_speakers() -> Option<Value> {
     value
 }
 
+pub fn recording_job_id() -> Option<String> {
+    if let Some(session) = SESSION.lock().unwrap().as_ref() { return Some(session.job_id.clone()); }
+    LAST.lock().unwrap().as_ref()?.get("job_id")?.as_str().map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

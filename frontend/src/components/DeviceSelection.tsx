@@ -3,7 +3,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { RefreshCw, Mic, Speaker } from 'lucide-react';
 import { AudioLevelMeter, CompactAudioLevelMeter } from './AudioLevelMeter';
-import { AudioBackendSelector } from './AudioBackendSelector';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import Analytics from '@/lib/analytics';
@@ -59,7 +58,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       console.log('Fetched audio devices:', result);
     } catch (err) {
       console.error('Failed to fetch audio devices:', err);
-      setError('Failed to load audio devices. Please check your system audio settings.');
+      setError('无法加载音频设备，请检查系统音频设置。');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -231,7 +230,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       // Only monitor input devices for now (microphones)
       const deviceNames = inputDevices.map(device => device.name);
       if (deviceNames.length === 0) {
-        setError('No microphone devices found to monitor');
+        setError('未找到可测试的麦克风');
         return;
       }
 
@@ -241,7 +240,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       console.log('Started audio level monitoring for input devices:', deviceNames);
     } catch (err) {
       console.error('Failed to start audio level monitoring:', err);
-      setError('Failed to start audio level monitoring');
+      setError('无法测试麦克风，请检查设备和权限。');
     }
   };
 
@@ -281,21 +280,10 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium text-gray-900">Audio Devices</h4>
+        <h4 className="text-sm font-medium text-gray-900">音频输入</h4>
         <div className="flex items-center space-x-2">
-          {/* TODO: Monitoring */}
-          {/* <button */}
-          {/*   onClick={toggleAudioLevelMonitoring} */}
-          {/*   disabled={disabled || inputDevices.length === 0} */}
-          {/*   className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${ */}
-          {/*     isMonitoring */}
-          {/*       ? 'bg-red-100 text-red-700 hover:bg-red-200' */}
-          {/*       : 'bg-green-100 text-green-700 hover:bg-green-200' */}
-          {/*   } disabled:pointer-events-none disabled:opacity-50`} */}
-          {/*   title={inputDevices.length === 0 ? 'No microphones available to test' : ''} */}
-          {/* > */}
-          {/*   {isMonitoring ? 'Stop Test' : 'Test Mic'} */}
-          {/* </button> */}
+          <button onClick={toggleAudioLevelMonitoring} disabled={disabled || inputDevices.length === 0}
+            className="rounded-md border border-gray-300 px-3 py-1 text-sm disabled:opacity-50">{isMonitoring ? '停止测试' : '测试麦克风'}</button>
           <button
             onClick={handleRefresh}
             disabled={refreshing || disabled}
@@ -318,7 +306,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           <div className="flex items-center gap-2">
             <Mic className="h-4 w-4 text-gray-600" />
             <Label htmlFor="mic-selection" className="text-sm font-medium text-gray-700">
-              Microphone
+              麦克风
             </Label>
           </div>
           <Select
@@ -327,10 +315,10 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
             disabled={disabled}
           >
             <SelectTrigger id="mic-selection" className="w-full">
-              <SelectValue placeholder="Select Microphone" />
+              <SelectValue placeholder="选择麦克风" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="default">Default Microphone</SelectItem>
+              <SelectItem value="default">默认麦克风</SelectItem>
               {inputDevices.map((device) => (
                 <SelectItem
                   key={device.name}
@@ -342,13 +330,13 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
             </SelectContent>
           </Select>
           {inputDevices.length === 0 && (
-            <p className="text-xs text-gray-500">No microphone devices found</p>
+            <p className="text-xs text-gray-500">未找到麦克风</p>
           )}
 
           {/* Audio Level Meters for Input Devices */}
           {showLevels && inputDevices.length > 0 && (
             <div className="space-y-2 pt-2 border-t border-gray-100">
-              <p className="text-xs text-gray-600 font-medium">Microphone Levels:</p>
+              <p className="text-xs text-gray-600 font-medium">麦克风音量：</p>
               {inputDevices.map((device) => {
                 const levelData = audioLevels.get(device.name);
                 return (
@@ -386,7 +374,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           <div className="flex items-center gap-2">
             <Speaker className="h-4 w-4 text-gray-600" />
             <Label htmlFor="system-selection" className="text-sm font-medium text-gray-700">
-              System Audio
+              系统音频
             </Label>
           </div>
 
@@ -396,11 +384,11 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
             disabled={disabled}
           >
             <SelectTrigger id="system-selection" className="w-full">
-              <SelectValue placeholder="Select System Audio" />
+              <SelectValue placeholder="选择系统音频" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="default">Default System Audio</SelectItem>
-              <SelectItem value="disabled">Do not record system audio</SelectItem>
+              <SelectItem value="default">默认系统音频</SelectItem>
+              <SelectItem value="disabled">不录制系统音频</SelectItem>
               {outputDevices.map((device) => (
                 <SelectItem
                   key={device.name}
@@ -413,27 +401,22 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           </Select>
 
           {outputDevices.length === 0 && (
-            <p className="text-xs text-gray-500">No system audio devices found</p>
+            <p className="text-xs text-gray-500">未找到系统音频设备</p>
           )}
 
-          {/* Backend Selection - available on all platforms */}
-          {!disabled && (
-            <div className="pt-3 border-t border-gray-100">
-              <AudioBackendSelector disabled={disabled} />
-            </div>
-          )}
+
         </div>
       </div>
 
       {/* Info text */}
       <div className="text-xs text-gray-500 space-y-1">
-        <p>• <strong>Microphone:</strong> Records your voice and ambient sound</p>
-        <p>• <strong>System Audio:</strong> Records computer audio (music, calls, etc.)</p>
+        <p>• <strong>麦克风：</strong> 录制你的声音和环境声音</p>
+        <p>• <strong>系统音频：</strong> 录制电脑播放的声音，例如通话或视频</p>
         {isMonitoring && (
-          <p>• <strong>Mic Levels:</strong> Green = good, Yellow = loud, Red = too loud</p>
+          <p>• <strong>麦克风音量：</strong> 绿色为正常，黄色为较响，红色为过响</p>
         )}
         {!isMonitoring && inputDevices.length > 0 && (
-          <p>• <strong>Tip:</strong> Click "Test Mic" to check if your microphone is working</p>
+          <p>• <strong>提示：</strong> 点击“测试麦克风”检查声音输入</p>
         )}
       </div>
     </div>

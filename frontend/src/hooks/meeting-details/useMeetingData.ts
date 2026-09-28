@@ -16,7 +16,7 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
   // State
   // Use prop directly since summary generation fetches transcripts independently
   const transcripts = meeting.transcripts;
-  const [meetingTitle, setMeetingTitle] = useState(meeting.title || '+ New Call');
+  const [meetingTitle, setMeetingTitle] = useState(meeting.title || '未命名会议');
   const [aiSummary, setAiSummary] = useState<MeetingSummary | null>(summaryData);
   const [isSaving, setIsSaving] = useState(false);
   const [isSummaryDirty, setIsSummaryDirty] = useState(false);
@@ -41,7 +41,7 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
 
   const handleSaveSummary = useCallback(async (summary: MeetingSummary) => {
     if (!hasVisibleSummaryContent(summary)) {
-      throw new Error('Summary contains no visible content to save.');
+      throw new Error('纪要没有可保存的正文。');
     }
 
     const formattedSummary = 'markdown' in summary || 'summary_json' in summary
@@ -64,10 +64,10 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
         await handleSaveSummary(aiSummary);
       }
 
-      toast.success("Changes saved successfully");
+      toast.success("修改已保存");
     } catch (error) {
       console.error('Failed to save changes:', error);
-      toast.error("Failed to save changes", { description: String(error) });
+      toast.error("保存修改失败", { description: '请检查保存目录权限和可用空间后重试。' });
     } finally {
       setIsSaving(false);
     }

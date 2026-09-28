@@ -2,14 +2,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { MeetingSummary, SummaryProcessResponse } from '@/types';
-import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
-import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { MeetingDetailsSplitView, type MeetingDetailsTab } from '@/components/MeetingDetails/MeetingDetailsSplitView';
-import { ModelConfig } from '@/components/ModelSettingsModal';
 
 // Custom hooks
 import { useMeetingData } from '@/hooks/meeting-details/useMeetingData';
@@ -18,6 +15,9 @@ import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useSummaryProgress } from '@/hooks/useSummaryProgress';
+import { SummaryProgressPanel } from '@/components/SummaryProgress';
+import { parseSummaryContent } from '@/lib/summary-content';
 
 export default function PageContent({
   meeting,
@@ -57,67 +57,45 @@ export default function PageContent({
   });
 
   // State
-  const [customPrompt, setCustomPrompt] = useState<string>('');
+  const customPrompt = '';
   const isRecording = false;
   const [activeTab, setActiveTab] = useState<MeetingDetailsTab>('transcript');
+  const progress = useSummaryProgress(meeting.id);
+  const [showLiveProgress, setShowLiveProgress] = useState(true);
+  const refreshedSummary = useRef<string | null>(null);
+  const [savedSummary, setSavedSummary] = useState<SummaryProcessResponse | null>(null);
+  useEffect(() => { setShowLiveProgress(true); refreshedSummary.current = null; setSavedSummary(null); }, [meeting.id]);
+  useEffect(() => {
+    let cancelled = false;
+    if (progress?.phase === 'completed' && refreshedSummary.current !== meeting.id) {
+      refreshedSummary.current = meeting.id;
+      void invoke<SummaryProcessResponse>('api_get_summary', { meetingId: meeting.id }).then(value => {
+        if (!cancelled && value.status === 'completed') {
+          setSavedSummary(value);
+          meetingData.setAiSummary(parseSummaryContent(value.data));
+        }
+      }).catch(() => { refreshedSummary.current = null; });
+    }
+    return () => { cancelled = true; refreshedSummary.current = null; };
+  }, [progress?.phase, meeting.id]);
+  useEffect(() => {
+    if (sessionStorage.getItem('meeting-workspace-tab') === 'summary') setActiveTab('summary');
+  }, [meeting.id]);
 
-  // Ref to store the modal open function from SummaryGeneratorButtonGroup
-  const openModelSettingsRef = useRef<(() => void) | null>(null);
   const autoSwitchedSummaryMeetingIdsRef = useRef(new Set<string>());
   const manuallySelectedTabMeetingIdsRef = useRef(new Set<string>());
   const autoGenerationStartedMeetingIdRef = useRef<string | null>(null);
 
-  // Sidebar context
-  const { serverAddress } = useSidebar();
-
   // Get model config from ConfigContext
-  const { modelConfig, setModelConfig, isModelConfigLoading } = useConfig();
+  const { modelConfig, isModelConfigLoading } = useConfig();
 
   // Custom hooks
   const meetingData = useMeetingData({ meeting, summaryData, onMeetingUpdated });
   const templates = useTemplates();
 
-  // Callback to register the modal open function
-  const handleRegisterModalOpen = (openFn: () => void) => {
-    console.log('📝 Registering modal open function in PageContent');
-    openModelSettingsRef.current = openFn;
-  };
-
-  // Callback to trigger modal open (called from error handler)
-  const handleOpenModelSettings = () => {
-    console.log('🔔 Opening model settings from PageContent');
-    if (openModelSettingsRef.current) {
-      openModelSettingsRef.current();
-    } else {
-      console.warn('⚠️ Modal open function not yet registered');
-    }
-  };
-
-  // Save model config to backend database and sync via event
-  const handleSaveModelConfig = async (config?: ModelConfig) => {
-    if (!config) return;
-    try {
-      await invoke('api_save_model_config', {
-        provider: config.provider,
-        model: config.model,
-        whisperModel: config.whisperModel,
-        apiKey: config.apiKey ?? null,
-        ollamaEndpoint: config.ollamaEndpoint ?? null,
-      });
-
-      // Emit event so ConfigContext and other listeners stay in sync
-      const { emit } = await import('@tauri-apps/api/event');
-      await emit('model-config-updated', config);
-
-      toast.success('Model settings saved successfully');
-    } catch (error) {
-      console.error('Failed to save model config:', error);
-      toast.error('Failed to save model settings');
-    }
-  };
-
   const summaryGeneration = useSummaryGeneration({
-    initialSummary,
+    initialSummary: savedSummary || initialSummary,
+    externallyTracked: showLiveProgress && !!progress,
     meeting,
     transcripts: meetingData.transcripts,
     modelConfig: modelConfig,
@@ -126,7 +104,6 @@ export default function PageContent({
     onMeetingUpdated,
     updateMeetingTitle: meetingData.updateMeetingTitle,
     setAiSummary: meetingData.setAiSummary,
-    onOpenModelSettings: handleOpenModelSettings,
   });
 
   const copyOperations = useCopyOperations({
@@ -192,18 +169,20 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen min-w-0 bg-gray-50"
     >
-      <div className="flex flex-1 min-w-0 overflow-hidden">
+      <header className="shrink-0 border-b border-gray-200 bg-white px-5 py-4">
+        <h1 className="break-words text-lg font-semibold">{meetingData.meetingTitle}</h1>
+        <p className="mt-1 text-sm text-gray-600">{new Date(meeting.created_at).toLocaleString('zh-CN')}</p>
+      </header>
+      <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
         <MeetingDetailsSplitView
           activeTab={activeTab}
           onTabChange={(tab) => {
             manuallySelectedTabMeetingIdsRef.current.add(meeting.id);
-            setActiveTab(tab);
+            setActiveTab(tab); sessionStorage.setItem('meeting-workspace-tab', tab);
           }}
           transcript={
             <TranscriptPanel
               transcripts={meetingData.transcripts}
-              customPrompt={customPrompt}
-              onPromptChange={setCustomPrompt}
               onCopyTranscript={copyOperations.handleCopyTranscript}
               onOpenMeetingFolder={meetingOperations.handleOpenMeetingFolder}
               isRecording={isRecording}
@@ -220,7 +199,7 @@ export default function PageContent({
               onRefetchTranscripts={onRefetchTranscripts}
             />
           }
-          summary={
+          summary={showLiveProgress && progress && progress.phase !== 'completed' ? <SummaryProgressPanel progress={progress} onRetry={() => { setShowLiveProgress(false); void summaryGeneration.handleRegenerateSummary(); }} /> :
             <SummaryPanel
               meeting={meeting}
               meetingTitle={meetingData.meetingTitle}
@@ -232,23 +211,13 @@ export default function PageContent({
               aiSummary={meetingData.aiSummary}
               summaryStatus={summaryGeneration.summaryStatus}
               transcripts={meetingData.transcripts}
-              modelConfig={modelConfig}
-              setModelConfig={setModelConfig}
-              onSaveModelConfig={handleSaveModelConfig}
               onGenerateSummary={summaryGeneration.handleGenerateSummary}
               onStopGeneration={summaryGeneration.handleStopGeneration}
-              customPrompt={customPrompt}
               onSaveSummary={meetingData.handleSaveSummary}
               onSummaryChange={meetingData.handleSummaryChange}
               onDirtyChange={meetingData.setIsSummaryDirty}
               summaryError={summaryGeneration.summaryError}
               onRegenerateSummary={summaryGeneration.handleRegenerateSummary}
-              getSummaryStatusMessage={summaryGeneration.getSummaryStatusMessage}
-              availableTemplates={templates.availableTemplates}
-              selectedTemplate={templates.selectedTemplate}
-              onTemplateSelect={templates.handleTemplateSelection}
-              isModelConfigLoading={isModelConfigLoading}
-              onOpenModelSettings={handleRegisterModalOpen}
             />
           }
         />

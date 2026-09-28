@@ -49,8 +49,8 @@ const response = (overrides: Partial<SummaryProcessResponse> = {}): SummaryProce
 });
 let configuredModel = 'test';
 let state: ReturnType<typeof useSummaryGeneration>;
-function Status({ initialSummary, meetingId = 'meeting-a' }: {
-  initialSummary: SummaryProcessResponse; meetingId?: string;
+function Status({ initialSummary, meetingId = 'meeting-a', externallyTracked = false }: {
+  initialSummary: SummaryProcessResponse; meetingId?: string; externallyTracked?: boolean;
 }) {
   const [summary, setAiSummary] = useState<MeetingSummary | null>(() => parseSummaryContent(initialSummary.data));
   const [title, updateMeetingTitle] = useState('Original title');
@@ -58,7 +58,7 @@ function Status({ initialSummary, meetingId = 'meeting-a' }: {
     meeting: { id: meetingId, created_at: '2026-09-01T00:00:00Z' },
     transcripts: [], modelConfig: { provider: 'ollama', model: configuredModel, whisperModel: 'base' },
     isModelConfigLoading: false, selectedTemplate: 'daily_standup',
-    setAiSummary, updateMeetingTitle, initialSummary,
+    setAiSummary, updateMeetingTitle, initialSummary, externallyTracked,
   });
   return <output>{state.summaryStatus}:{state.summaryError}:{title}:{JSON.stringify(summary)}</output>;
 }
@@ -84,9 +84,9 @@ afterEach(async () => {
   globalThis.setInterval = realSetInterval;
   globalThis.clearInterval = realClearInterval;
 });
-async function show(initialSummary: SummaryProcessResponse | null, meetingId = 'meeting-a') {
+async function show(initialSummary: SummaryProcessResponse | null, meetingId = 'meeting-a', externallyTracked = false) {
   await act(async () => {
-    const view = <SidebarProvider>{initialSummary && <Status key={meetingId} initialSummary={initialSummary} meetingId={meetingId} />}</SidebarProvider>;
+    const view = <SidebarProvider>{initialSummary && <Status key={meetingId} initialSummary={initialSummary} meetingId={meetingId} externallyTracked={externallyTracked} />}</SidebarProvider>;
     if (renderer) renderer.update(view); else renderer = create(view);
   });
 }
@@ -96,6 +96,18 @@ async function tick() {
 }
 
 describe('summary state restored when returning to a meeting', () => {
+  test('independent live progress takes over legacy polling and accepts saved completion', async () => {
+    const pending = response();
+    await show(pending);
+    expect(timers.size).toBe(1);
+    await show(pending, 'meeting-a', true);
+    expect(timers.size).toBe(0);
+    expect(state.summaryStatus).toBe('processing');
+    await show(response({ status: 'completed', data: { markdown: 'Saved result' } }), 'meeting-a', true);
+    expect(state.summaryStatus).toBe('completed');
+    expect(notify).not.toHaveBeenCalled();
+  });
+
   test('repeated recovery read failures end regeneration and retain visible notes', async () => {
     await show(response({ data: { markdown: 'Previous summary' } }));
     getSummary = async () => { throw new Error('Database unavailable'); };

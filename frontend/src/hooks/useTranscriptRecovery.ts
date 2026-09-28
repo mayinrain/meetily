@@ -188,8 +188,8 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         await applyPinnedSummaryLanguageToMeeting(savedMeetingId);
       } catch (error) {
         console.warn('Failed to apply pinned summary language to recovered meeting:', error);
-        toast.warning('Could not apply default summary language', {
-          description: 'The recovered meeting was saved, but the default summary language was not applied.',
+        toast.warning('无法应用默认纪要语言', {
+          description: '恢复的会议已保存，本次使用默认语言生成纪要。',
         });
       }
 

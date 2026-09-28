@@ -37,9 +37,9 @@ export function TranscriptButtonGroup({
     setIsExporting(true);
     try {
       const path = await invoke<string | null>('export_meeting_transcript', { meetingId });
-      if (path) toast.success('Transcript exported');
+      if (path) toast.success('转写已导出');
     } catch (error) {
-      toast.error(`Failed to export transcript: ${error}`);
+      toast.error('导出转写失败，请检查保存目录权限后重试');
     } finally {
       setIsExporting(false);
     }
@@ -64,17 +64,17 @@ export function TranscriptButtonGroup({
             onCopyTranscript();
           }}
           disabled={transcriptCount === 0}
-          title={transcriptCount === 0 ? 'No transcript available' : 'Copy Transcript'}
+          title={transcriptCount === 0 ? '暂无转写' : '复制转写'}
         >
           <Copy />
-          <span className="hidden @[22rem]:inline">Copy</span>
+          <span className="hidden @[22rem]:inline">复制</span>
         </Button>
 
         {meetingId && (
           <Button variant="outline" size="sm" onClick={exportTranscript}
-            disabled={transcriptCount === 0 || isExporting} title="Export Transcript">
+            disabled={transcriptCount === 0 || isExporting} title="导出转写">
             <Download />
-            <span className="hidden @[22rem]:inline">Export</span>
+            <span className="hidden @[22rem]:inline">导出</span>
           </Button>
         )}
 
@@ -86,38 +86,14 @@ export function TranscriptButtonGroup({
             Analytics.trackButtonClick('open_recording_folder', 'meeting_details');
             onOpenMeetingFolder();
           }}
-          title="Open Recording Folder"
+          title="打开录音文件夹"
         >
           <FolderOpen className="@[22rem]:mr-2" size={18} />
-          <span className="hidden @[22rem]:inline">Recording</span>
+          <span className="hidden @[22rem]:inline">录音</span>
         </Button>
 
-        {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 px-2 @[22rem]:px-4"
-            onClick={() => {
-              Analytics.trackButtonClick('enhance_transcript', 'meeting_details');
-              setShowRetranscribeDialog(true);
-            }}
-            title="Retranscribe to enhance your recorded audio"
-          >
-            <RefreshCw className="@[22rem]:mr-2" size={18} />
-            <span className="hidden @[22rem]:inline">Enhance</span>
-          </Button>
-        )}
       </ButtonGroup>
 
-      {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
-        <RetranscribeDialog
-          open={showRetranscribeDialog}
-          onOpenChange={setShowRetranscribeDialog}
-          meetingId={meetingId}
-          meetingFolderPath={meetingFolderPath}
-          onComplete={handleRetranscribeComplete}
-        />
-      )}
     </div>
   );
 }

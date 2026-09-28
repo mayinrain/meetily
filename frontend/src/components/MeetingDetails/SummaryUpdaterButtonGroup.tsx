@@ -27,7 +27,7 @@ export function SummaryUpdaterButtonGroup({
         variant="outline"
         size="sm"
         className={`${isDirty ? 'bg-green-200' : ""}`}
-        title={isSaving ? "Saving" : "Save Changes"}
+        title={isSaving ? "正在保存" : "保存修改"}
         onClick={() => {
           Analytics.trackButtonClick('save_changes', 'meeting_details');
           onSave();
@@ -37,12 +37,12 @@ export function SummaryUpdaterButtonGroup({
         {isSaving ? (
           <>
             <Loader2 className="animate-spin" />
-            <span className="hidden @[40rem]:inline">Saving...</span>
+            <span className="hidden @[40rem]:inline">正在保存…</span>
           </>
         ) : (
           <>
             <Save />
-            <span className="hidden @[40rem]:inline">Save</span>
+            <span className="hidden @[40rem]:inline">保存</span>
           </>
         )}
       </Button>
@@ -51,7 +51,7 @@ export function SummaryUpdaterButtonGroup({
       <Button
         variant="outline"
         size="sm"
-        title="Copy Summary"
+        title="复制纪要"
         onClick={() => {
           Analytics.trackButtonClick('copy_summary', 'meeting_details');
           onCopy();
@@ -59,7 +59,7 @@ export function SummaryUpdaterButtonGroup({
         className="cursor-pointer"
       >
         <Copy />
-        <span className="hidden @[40rem]:inline">Copy</span>
+        <span className="hidden @[40rem]:inline">复制</span>
       </Button>
 
       <Button variant="outline" size="sm" title="导出纪要 Markdown" onClick={() => void onExport()}>
