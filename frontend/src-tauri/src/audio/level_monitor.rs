@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tauri::{AppHandle, Emitter, Runtime};
 use anyhow::Result;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, SampleRate, StreamConfig};
 use serde::Serialize;
@@ -66,16 +66,9 @@ impl AudioLevelMonitor {
 
         // Create audio streams for each device
         for device_name in &device_names {
-            if let Ok(device) = self.find_device_by_name(&host, device_name) {
-                if let Ok(stream) = self.create_level_stream(&device, device_name, level_data.clone()).await {
-                    let mut streams = self.streams.lock().await;
-                    streams.push(stream);
-                } else {
-                    warn!("Failed to create audio stream for device: {}", device_name);
-                }
-            } else {
-                warn!("Device not found: {}", device_name);
-            }
+            let device = self.find_device_by_name(&host, device_name)?;
+            let stream = self.create_level_stream(&device, device_name, level_data.clone()).await?;
+            self.streams.lock().await.push(stream);
         }
 
         // Start emission task
@@ -352,4 +345,23 @@ pub async fn stop_monitoring() -> Result<()> {
     AUDIO_LEVEL_STATE.is_monitoring.store(false, Ordering::SeqCst);
     info!("Audio level monitoring stopped globally");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn levels_follow_silence_and_actual_samples() {
+        let levels = Arc::new(Mutex::new(Vec::new()));
+        process_audio_levels(&[0.0; 8], 1, "test microphone", "input", levels.clone());
+        assert_eq!(levels.lock().await[0].rms_level, 0.0);
+        assert!(!levels.lock().await[0].is_active);
+        process_audio_levels(&[-0.5, -0.5, 0.5, 0.5], 2, "test microphone", "input", levels.clone());
+        let values = levels.lock().await;
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].rms_level, 0.5);
+        assert_eq!(values[0].peak_level, 0.5);
+        assert!(values[0].is_active);
+    }
 }

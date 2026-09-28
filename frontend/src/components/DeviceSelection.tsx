@@ -128,10 +128,12 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
   // Set up audio level event listener
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let disposed = false;
 
     const setupAudioLevelListener = async () => {
       try {
-        unlisten = await listen<AudioLevelUpdate>('audio-levels', (event) => {
+        const dispose = await listen<AudioLevelUpdate>('audio-levels', (event) => {
+          if (disposed) return;
           const levelUpdate = event.payload;
           const newLevels = new Map<string, AudioLevelData>();
 
@@ -141,6 +143,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
 
           setAudioLevels(newLevels);
         });
+        if (disposed) dispose(); else unlisten = dispose;
       } catch (err) {
         console.error('Failed to setup audio level listener:', err);
       }
@@ -150,15 +153,11 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
 
     // Cleanup function
     return () => {
-      if (unlisten) {
-        unlisten();
-      }
-      // Stop monitoring when component unmounts
-      if (isMonitoring) {
-        stopAudioLevelMonitoring();
-      }
+      disposed = true;
+      unlisten?.();
+      void invoke('stop_audio_level_monitoring').catch(err => console.error('Failed to release microphone test:', err));
     };
-  }, [isMonitoring]);
+  }, []);
 
   // Handle device refresh
   const handleRefresh = async () => {
@@ -227,12 +226,9 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
   // Start audio level monitoring
   const startAudioLevelMonitoring = async () => {
     try {
-      // Only monitor input devices for now (microphones)
-      const deviceNames = inputDevices.map(device => device.name);
-      if (deviceNames.length === 0) {
-        setError('未找到可测试的麦克风');
-        return;
-      }
+      setError(null);
+      const deviceNames = selectedDevices.micDevice
+        ? [selectedDevices.micDevice.replace(/\s+\(input\)$/i, '')] : [];
 
       await invoke('start_audio_level_monitoring', { deviceNames });
       setIsMonitoring(true);
@@ -249,6 +245,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
     try {
       await invoke('stop_audio_level_monitoring');
       setIsMonitoring(false);
+      setShowLevels(false);
       setAudioLevels(new Map());
       console.log('Stopped audio level monitoring');
     } catch (err) {
@@ -286,7 +283,8 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
             className="rounded-md border border-gray-300 px-3 py-1 text-sm disabled:opacity-50">{isMonitoring ? '停止测试' : '测试麦克风'}</button>
           <button
             onClick={handleRefresh}
-            disabled={refreshing || disabled}
+            disabled={refreshing || disabled || isMonitoring}
+            aria-label="刷新音频设备"
             className="h-8 w-8 p-0 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-gray-100 disabled:pointer-events-none disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
@@ -312,7 +310,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           <Select
             value={selectedDevices.micDevice || 'default'}
             onValueChange={handleMicDeviceChange}
-            disabled={disabled}
+            disabled={disabled || isMonitoring}
           >
             <SelectTrigger id="mic-selection" className="w-full">
               <SelectValue placeholder="选择麦克风" />
@@ -337,7 +335,8 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           {showLevels && inputDevices.length > 0 && (
             <div className="space-y-2 pt-2 border-t border-gray-100">
               <p className="text-xs text-gray-600 font-medium">麦克风音量：</p>
-              {inputDevices.map((device) => {
+              {!audioLevels.size && <p className="text-xs text-gray-600">正在读取麦克风音量…</p>}
+              {inputDevices.filter(device => audioLevels.has(device.name)).map((device) => {
                 const levelData = audioLevels.get(device.name);
                 return (
                   <div key={`level-${device.name}`} className="space-y-1">
