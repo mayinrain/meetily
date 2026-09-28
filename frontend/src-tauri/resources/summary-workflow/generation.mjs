@@ -10,7 +10,7 @@ export function createGenerator({ base, directory, writeJson, log, signal, model
   const identity = { file, size: stat?.size, modified: stat?.mtimeMs };
   const payload = (system, user, maxTokens) => ({ model: modelId,
     messages: [{ role: 'system', content: system }, { role: 'user', content: [{ type: 'text', text: user }] }],
-    stream: false, max_tokens: maxTokens, temperature: 0.2, top_p: 0.9, top_k: 40,
+    stream: false, max_tokens: maxTokens, temperature: 0, top_p: 0.9, top_k: 40,
     min_p: 0, repeat_penalty: 1, presence_penalty: 0, repeat_last_n: 64, seed: 42,
     chat_template_kwargs: { enable_thinking: false } });
   async function post(endpoint, body, requestSignal = signal) {

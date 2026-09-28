@@ -1,5 +1,7 @@
 # 分段笔记与逐章汇总实验
 
+2026-09-28：后续1.7B OpenVINO后端、采样选择和原生接入记录见 [Qwen3-1.7B与Iris Xe验证](qwen17-openvino-experiment.md)。下文4B完整回归数据仍属于原版本。
+
 实验分支：`codex/meeting-section-summary`，基于 `codex/meeting-realtime-summary` 的 `e2086a7`。保留 SenseVoice、VAD、Community-1、说话人批次和保存原始转写的实现；只更换自动纪要工作流。旧正式分支与录音结果不被覆盖。
 
 流程参照 RugGear `codex/session-only-speaker` 的固定提交 [4b2cb4b](https://github.com/omnimind-project/RugGear-Meeting/tree/4b2cb4b31268588365aa04a2669f7e0c517d7115)，重点是 `MeetingCompression.kt`、`OverflowFinalSummary.kt` 和 `MeetingSummaryService.kt` 的本地路径，未移植 Android 采集、ASR 或分人代码。

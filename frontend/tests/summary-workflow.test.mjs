@@ -85,6 +85,7 @@ test('20-second meetings use complete source directly, not an empty incremental 
   const state = await h.run();
   assert.equal(state.status, 'ready'); assert.equal(state.route, 'direct'); assert.equal(state.final_report_complete, true);
   assert.equal(h.requests.length, 1); assert.equal(h.requests[0].max_tokens, 1800);
+  assert.equal(h.requests[0].temperature, 0); assert.equal(h.requests[0].repeat_penalty, 1);
   assert.match(h.requests[0].messages[1].content[0].text, /待确认：扩建住房/);
   assert.equal(state.unsaved_segments, 0); assert.equal(state.completed_batches, 1); assert.equal(h.stops(), 1);
   assert.equal(state.within_post_stop_target, true);
@@ -140,6 +141,7 @@ test('two notes close by combining same-name sections, preserving a final tail a
   assert.equal(sectionCalls.length, 4); // Empty conclusion needs no model call.
   assert.ok(sectionCalls[1].messages[1].content[0].text.match(/先试点再扩展/g).length >= 2);
   assert.equal(h.requests.at(-1).max_tokens, 2048); // No additional whole-report rewrite.
+  assert.ok(h.requests.every(r => r.temperature === 0 && r.repeat_penalty === 1));
   assert.match(state.markdown, /## 结论\n未提及/);
 });
 

@@ -54,13 +54,16 @@ export function validateSnapshot(previous, snapshot) {
 // The inbox is cumulative and atomic: snapshots may coalesce, complete batches cannot be lost.
 export async function runLive(directory, { signal, modelFactory = startModel, freeMemory = () => {
     // The native host supplies available (including reclaimable) memory, not just free pages.
-    const file = path.join(directory, 'memory.json');
+    const native = path.join(directory, 'memory.json');
+    const file = fs.existsSync(native) ? native : path.join(directory, 'openvino-memory.json');
     return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).available_bytes : os.freemem();
   },
     drainMs = 1800000, pollMs = 250 } = {}) {
   const began = Date.now(), abort = new AbortController();
   const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
-  const state = { workflow: 'section-notes-v1', model: 'qwen3.5:4b', status: 'recording', phase: 'collecting',
+  const state = { workflow: 'section-notes-v1',
+    model: process.env.MEETILY_WORKFLOW_BACKEND === 'openvino' ? 'Qwen3-1.7B' : 'qwen3.5:4b',
+    status: 'recording', phase: 'collecting',
     notes: [], cursor: 0, final_sections: {}, batches: [], source_segments: [], completed_batches: 0,
     queued_batches: 0, failed_batches: 0, maximum_queued_batches: 0, recording_active: true,
     minimum_available_bytes: null, stopped_at: null, observed_segments: 0, semantic_quality_verified: false,

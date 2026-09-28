@@ -3,9 +3,11 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { startOpenVino } from './runtime-openvino.mjs';
 
 // Only the child started here is owned or stopped. Never attach to another model server.
 export async function startModel(directory, signal) {
+  if (process.env.MEETILY_WORKFLOW_BACKEND === 'openvino') return startOpenVino(directory, signal);
   const server = process.env.MEETILY_WORKFLOW_SERVER, model = process.env.MEETILY_WORKFLOW_MODEL;
   if (!server || !model || !fs.existsSync(server) || !fs.existsSync(model))
     throw new Error('Configured llama.cpp server or Qwen3.5-4B model is missing');

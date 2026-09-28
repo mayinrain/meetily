@@ -1,8 +1,10 @@
-"""Local-only OpenVINO adapter for the existing summary workflow's text preflight."""
+"""Owned, localhost-only OpenVINO server for the recording summary workflow."""
 import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
+import select
+import socket
 import threading
 import time
 
@@ -40,7 +42,8 @@ def main():
                           'available_bytes': psutil.virtual_memory().available,
                           'rss_bytes': memory.rss, 'private_bytes': memory.private,
                           'cpu_percent': psutil.cpu_percent()}
-                write(args.directory / 'memory.json', record)
+                # The native host owns memory.json; never race its atomic writer.
+                write(args.directory / 'openvino-memory.json', record)
                 log.write(json.dumps(record) + '\n')
                 log.flush()
                 stopped.wait(1)
@@ -89,8 +92,8 @@ def main():
                     raise ValueError('Request exceeds context budget')
                 config = pipe.get_generation_config()
                 config.max_new_tokens = body['max_tokens']
-                config.do_sample = True
-                config.temperature = body['temperature']
+                config.do_sample = body['temperature'] > 0
+                config.temperature = body['temperature'] if config.do_sample else 1.0
                 config.top_p = body['top_p']
                 config.top_k = body['top_k']
                 config.repetition_penalty = body['repeat_penalty']
@@ -100,12 +103,25 @@ def main():
                 config.ignore_eos = False
                 if body['min_p'] != 0 or body['repeat_penalty'] != 1 or body['stream']:
                     raise ValueError('Probe only supports the established summary sampling profile')
+                config.validate()
                 start = time.monotonic()
-                result = pipe.generate(inputs, config, lambda _: time.monotonic()-start >= 600)
+                def cancelled(_text):
+                    if time.monotonic()-start >= 600:
+                        return True
+                    # Stop a discarded recording note before the final-tail request starts.
+                    try:
+                        readable, _, _ = select.select([self.connection], [], [], 0)
+                        return bool(readable) and not self.connection.recv(1, socket.MSG_PEEK)
+                    except OSError:
+                        return True
+
+                result = pipe.generate(inputs, config, cancelled)
                 if time.monotonic()-start >= 600:
                     raise TimeoutError('Generation exceeded 600 seconds')
                 metrics = result.perf_metrics
                 response = {'model': model_id, 'device': args.device,
+                            'generation_config': {'do_sample': config.do_sample,
+                                                  'repetition_penalty': config.repetition_penalty},
                             'choices': [{'finish_reason': 'stop' if result.finish_reasons[0] == genai.GenerationFinishReason.STOP else 'length',
                                          'message': {'role': 'assistant', 'content': tokenizer.decode(result.tokens[0])}}],
                             'usage': {'prompt_tokens': metrics.get_num_input_tokens(),

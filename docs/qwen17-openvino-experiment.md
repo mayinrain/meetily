@@ -1,6 +1,6 @@
 # Qwen3-1.7B 与 Iris Xe 验证
 
-2026-09-28，在独立分支 `codex/meeting-section-summary` 上验证参考项目同系列的 1.7B 模型与 Intel 核显。日常入口和原生应用保持原状，ASR、VAD、Community-1 及纪要提示词未修改。本次追加模型身份传递和隔离的文本预检工具；不是正式 OpenVINO 后端集成。
+2026-09-28，在独立分支 `codex/meeting-section-summary` 上验证参考项目同系列的 1.7B 模型与 Intel 核显。日常入口保持原状，ASR、VAD、Community-1 及纪要提示词未修改。完成后端和采样对照后，按用户选择，将 OpenVINO CPU 与 temperature=0、repeat_penalty=1.0 接入独立实验版原生应用。以下保留各次实验的参数和范围，接入验证见文末。
 
 ## 环境与模型
 
@@ -29,7 +29,7 @@
 
 ## 完整文本预检工具
 
-`scripts/validate-openvino-summary-replay.mjs` 复用生产 `runLive` 与章节逻辑，使用 `scripts/openvino-summary-probe.py` 提供仅绑定本机的模板、tokenize 和生成接口。所有实际生成都指定 Qwen3-1.7B；模型 id 进入持久化状态和请求检查点，避免跨模型复用缓存。默认模型工厂与原 4B 行为不变。
+`scripts/validate-openvino-summary-replay.mjs` 复用生产 `runLive` 与章节逻辑，通过共享 `runtime-openvino.mjs` 启动随应用打包的 `frontend/src-tauri/resources/summary-workflow/openvino-server.py`，提供仅绑定本机的模板、tokenize 和生成接口。所有实际生成都指定 Qwen3-1.7B；模型 id 进入持久化状态和请求检查点，避免跨模型复用缓存。未显式选择 OpenVINO 时仍使用 llama.cpp。
 
 在已安装上述依赖的 Windows 隔离环境中运行：
 
@@ -73,3 +73,29 @@ Mac 与 Windows 各 15 项工作流测试通过，新增模型身份与跨模型
 本地原始证据在 `artifacts/offline-development/qwen17-igpu-20260928/`，未将私有转写或纪要加入Git。证据包SHA-256 `abf3fd74e5818243e80f6ef0a3a4351bfc03287d189ff1ce9f25edffd9b2e4dd`；`fulltext-evidence/openvino-cpu-fulltext-01/minutes-raw.md` 与状态正文逐字一致，SHA-256 `2a7e8d1e77b20c47575107cd6ed33bd098ec8df877492b6cf98eb3ddaf2a97a8`。另有 `fulltext-metrics.json`、`fulltext-chapter-coverage.json`、`QUALITY_REVIEW.md` 与原始请求响应，可复核性能、来源覆盖及错误发生阶段。
 
 用户要求改为当前会话实时汇报后，跟进自动化已暂停，不自动恢复。原goal保持暂停。原日常启动脚本及启动器SHA与实验前一致，未创建新的Windows计划任务。
+
+
+## 采样选择与原生接入
+
+用户选择 **temperature=0、repeat_penalty=1.0**。top_p=0.9、top_k=40 保留，OpenVINO 实际设置 do_sample=false，因而贪心解码不使用 top_p/top_k。会中笔记、尾文和最终章节共用同一生成器；提示词与分段预算没有改动。
+
+同一份问题笔记的局部对照中，0/1.0 用42.015秒生成436 token，去掉了若干碎句，但仍猜写工资/工时且丢失信息；对应章节82.360秒。0/1.08并未解决事实错误。用户选择参数后进行工程接入，不意味着质量复核通过；旧全文888.753秒的结果属于0.2/1.0，不能归到新参数名下。INT8没有下载或测速。
+
+Windows隔离环境仍需上述固定版本依赖和完整模型目录。在准备好的安装目录运行：
+
+```text
+python scripts/start-realtime-offline.py --root <meeting-offline> --app <candidate-meetily.exe> --summary-backend openvino
+```
+
+OpenVINO使用 `tools/openvino-qwen17/.venv/Scripts/python.exe` 和 `shared/models/Qwen3-1.7B-int4-ov/`，显式CPU、两线程。原生Rust将Python服务和Node运行时一并提取到该场会议目录；真实模型身份保存在状态和纪要数据库。此入口对“内置AI”设置启用固定实验模型，尚未新增模型目录中的下载/选择项，设置页已有的4B选择不会改变该实验入口的实际1.7B后端。
+
+只切换独立 `start-meetily-section-summary.cmd`；目标机新Python启动器另存为 `services/realtime-e2086a7/scripts/start-section-openvino.py`，避免覆盖日常启动器。日常 `start-meetily-offline.cmd` 保留。关闭应用或总结结束时释放本次拥有的模型进程树；取消会中笔记时停止该次生成，避免阻塞尾文。OpenVINO资源监测写 `openvino-memory.json`，原生主进程继续独占 `memory.json`。
+
+共享运行时定点验证 `integration-runtime-02` 已复现所选0/1.0笔记，确认实际do_sample=false、repetition_penalty=1。取消长请求后的下一请求0.367秒完成，结束后自有模型进程全部退出。第一次探针仅因Windows文本文件CRLF与JSON响应LF比较失败；改为读取原始JSON响应后复测通过，没有把换行差异作为模型错误。证据SHA-256 `e359794946090603633bec2854bad5acca67fc750d15dc751101f075cca3a967`。
+
+
+Windows发布构建与5项原生文件/数据库测试通过，Mac/Windows各15项Node测试通过。候选 `section-openvino-01` 的EXE SHA-256为 `8997f7d4c76624baa3a431c5d53b415d09bb526b7a38368889bd2f9964393be5`，包SHA-256为 `8745bbd59276754846fbf5d1dbd50028c99dbbb554879f1b4f673eebcfd46175`；安装时校验4个公共运行库，16份构建输入源码SHA与提交内容一致。
+
+原生20秒虚拟麦克风短测 `section-win-openvino-short-01`：全部音频帧输入、零欠载，5段ASR和1个来源批次保存；9.540秒显示说话人标签，**停止后21.117秒纪要实际写入SQLite**。摘要状态、原始响应和数据库正文逐字一致，模型均为Qwen3-1.7B，实际CPU、贪心解码、重复惩罚1.0，生成正常stop。所有来源逐项一致且模型进程树释放。系统可用内存最低1.813GiB，模型RSS峰值2.485GiB；5秒采样的11个全机CPU读数平均26.27%，仅代表此短测。归档SHA-256 `5923391468e9903ddec9326f635f91bdbb54fb1537b2f5da4b311701508edfdf`。
+
+短测验证了原生接入和保存，不代替新参数下的66分钟积压、会后120秒或准确度验收。原始输出仍将采集开场词当公司名，并从“人员增加、住宿问题”推导出分析/解决待办；未将这些错误人工改写后冒充模型结果。此轮按用户要求接入实验版，不改纪要提示词。

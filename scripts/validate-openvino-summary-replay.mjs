@@ -1,11 +1,10 @@
 // Full recorded-text preflight. Accelerated arrivals exclude live ASR, diarization and DB save.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { runLive, writeJson } from '../frontend/src-tauri/resources/summary-workflow/live.mjs';
+import { startOpenVino } from '../frontend/src-tauri/resources/summary-workflow/runtime-openvino.mjs';
 import { sourceRows } from '../frontend/src-tauri/resources/summary-workflow/round.mjs';
 import { planChunk } from '../frontend/src-tauri/resources/summary-workflow/sections.mjs';
 
@@ -14,6 +13,7 @@ if (!input || !directory || !python || !modelPath || !['CPU', 'GPU'].includes(de
   throw new Error('Expected captured input, fresh output directory, Python, IR model directory and CPU/GPU');
 fs.mkdirSync(directory, { recursive: true });
 process.env.MEETILY_WORKFLOW_MODEL = path.join(modelPath, 'openvino_model.bin');
+process.env.MEETILY_WORKFLOW_SERVER = python;
 const raw = fs.readFileSync(input), captured = JSON.parse(raw), batches = captured.result.batches;
 const rows = batches.flatMap(sourceRows), sources = batches.flatMap(b => b.segments);
 const snapshot = { status: 'running', transcript_segments: sources, result: { batches, source_segments: sources } };
@@ -23,38 +23,7 @@ writeJson(path.join(directory, 'validation-mode.json'), { mode: 'accelerated-rec
   segments: rows.length, source_batches: batches.length,
   excluded: ['ASR', 'VAD', 'diarization', 'microphone', 'real-time backlog', 'desktop save'] });
 const controller = new AbortController(), began = Date.now();
-let child;
-async function modelFactory(directory, signal) {
-  const log = fs.openSync(path.join(directory, 'openvino-server.log'), 'a');
-  child = spawn(python, ['-u', fileURLToPath(new URL('./openvino-summary-probe.py', import.meta.url)),
-    modelPath, directory, '--device', device], { stdio: ['ignore', log, log], windowsHide: true,
-    env: { ...process.env, PYTHONUTF8: '1' } });
-  fs.closeSync(log);
-  let spawnError;
-  child.once('error', error => { spawnError = error; });
-  const exited = new Promise(resolve => child.once('close', resolve));
-  const kill = () => {
-    if (child.exitCode !== null || !child.pid) return;
-    // Windows venv Python redirects to a child interpreter; release this owned tree.
-    if (process.platform === 'win32') {
-      try { execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); }
-      catch (error) { if (child.exitCode === null) child.kill(); }
-    } else child.kill();
-  };
-  process.once('exit', kill);
-  const stop = async () => { kill(); await exited; process.removeListener('exit', kill); };
-  try {
-    const ready = path.join(directory, 'openvino-server.json'), start = Date.now();
-    while (!fs.existsSync(ready)) {
-      signal.throwIfAborted();
-      if (spawnError) throw spawnError;
-      if (child.exitCode !== null) throw new Error('OpenVINO server exited before ready');
-      if (Date.now() - start > 120000) throw new Error('OpenVINO startup exceeded 120 seconds');
-      await sleep(250, undefined, { signal });
-    }
-    return { ...JSON.parse(fs.readFileSync(ready, 'utf8')), id: 'Qwen3-1.7B', stop };
-  } catch (error) { await stop(); throw error; }
-}
+const modelFactory = (directory, signal) => startOpenVino(directory, signal, device);
 const running = runLive(directory, { signal: controller.signal, modelFactory });
 try {
   let lastNotes = -1;

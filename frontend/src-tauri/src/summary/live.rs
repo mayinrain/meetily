@@ -56,7 +56,8 @@ fn write(path: &Path, value: &Value) -> Result<(), String> {
 pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -> Result<(), String> {
     let state = app.state::<crate::state::AppState>();
     let config = SettingsRepository::get_model_config(state.db_manager.pool()).await.map_err(|e| e.to_string())?;
-    if !config.is_some_and(|c| c.provider == "builtin-ai" && c.model == MODEL) { return Ok(()); }
+    let openvino = std::env::var("MEETILY_WORKFLOW_BACKEND").as_deref() == Ok("openvino");
+    if !config.is_some_and(|c| c.provider == "builtin-ai" && (openvino || c.model == MODEL)) { return Ok(()); }
     let _start_guard = super::commands::SUMMARY_START_LOCK.lock().await;
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let directory = app_data.join("recording-summaries").join(uuid::Uuid::new_v4().to_string());
@@ -81,17 +82,18 @@ pub async fn begin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &str) -
             return Err("Previous summary is still running; recording and transcription continue".into());
         }
         let node = std::env::var_os("MEETILY_WORKFLOW_NODE").ok_or("Configure MEETILY_WORKFLOW_NODE for the offline summary runtime")?;
-        let server = std::env::var_os("MEETILY_WORKFLOW_SERVER").ok_or("Configure MEETILY_WORKFLOW_SERVER for compatible llama.cpp")?;
+        let server = std::env::var_os("MEETILY_WORKFLOW_SERVER").ok_or("Configure MEETILY_WORKFLOW_SERVER for the summary backend")?;
         let model = std::env::var_os("MEETILY_WORKFLOW_MODEL").map(PathBuf::from)
             .unwrap_or(super::summary_engine::models::get_model_path(&app_data, MODEL).map_err(|e| e.to_string())?);
-        if !model.is_file() { return Err("Qwen3.5-4B Q4_K_M is not installed".into()); }
+        if !model.is_file() { return Err("Configured summary model weights are not installed".into()); }
         macro_rules! source { ($name:literal) => {
             ($name, include_str!(concat!("../../resources/summary-workflow/", $name)))
         }; }
         for (name, source) in [source!("live.mjs"), source!("round.mjs"), source!("runtime.mjs"),
             source!("prompt.mjs"), source!("facts.mjs"), source!("text-facts.mjs"),
             source!("workflow-submissions.mjs"), source!("relevant-memory.mjs"),
-            source!("sections.mjs"), source!("generation.mjs")] {
+            source!("sections.mjs"), source!("generation.mjs"),
+            source!("runtime-openvino.mjs"), source!("openvino-server.py")] {
             std::fs::write(directory.join("runtime").join(name), source).map_err(|e| e.to_string())?;
         }
         // Release any idle built-in summary model before reserving this recording's model.
@@ -245,7 +247,7 @@ async fn save_report(pool: &SqlitePool, meeting_id: &str, started: chrono::DateT
     validate_sources(&rows, &value["source_segments"])?;
     let markdown = value["markdown"].as_str().filter(|s| !s.trim().is_empty()).ok_or("Missing report")?;
     SummaryProcessesRepository::update_process_completed(pool, meeting_id, started,
-        json!({"markdown":markdown,"workflow":value["workflow"],"semantic_quality_verified":false,
+        json!({"markdown":markdown,"workflow":value["workflow"],"model":value["model"],"semantic_quality_verified":false,
             "within_post_stop_target":value["within_post_stop_target"]}),
         value["completed_batches"].as_i64().unwrap_or(0),
         value["settled_seconds_after_stop"].as_f64().unwrap_or(0.0)).await.map_err(|e| e.to_string())?;
@@ -366,7 +368,7 @@ mod tests {
             .bind(started).bind(started).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO transcripts (id,meeting_id,transcript,timestamp,audio_start_time,audio_end_time,duration) VALUES ('database-id','meeting','小林提交周报','00:00',0,20,20)")
             .execute(&pool).await.unwrap();
-        let value = json!({"status":"ready","workflow":WORKFLOW,"within_post_stop_target":true,"markdown":"## 明确待办\n- 小林提交周报。",
+        let value = json!({"status":"ready","workflow":WORKFLOW,"model":"Qwen3-1.7B","within_post_stop_target":true,"markdown":"## 明确待办\n- 小林提交周报。",
             "source_segments":[{"id":"live-id","text":"小林提交周报","audio_start_time":0,"audio_end_time":20}],
             "completed_batches":1,"settled_seconds_after_stop":1.5});
         SummaryProcessesRepository::create_or_reset_process(&pool,"meeting",started).await.unwrap();
@@ -380,6 +382,7 @@ mod tests {
         let report: Value = serde_json::from_str(&saved.result.unwrap()).unwrap();
         assert_eq!(report["markdown"],value["markdown"]);
         assert_eq!(report["workflow"],WORKFLOW);
+        assert_eq!(report["model"],"Qwen3-1.7B");
         assert_eq!(report["within_post_stop_target"],true);
         assert_eq!(saved.chunk_count,1);
         sqlx::query("UPDATE transcripts SET transcript='人工修改' WHERE id='database-id'")

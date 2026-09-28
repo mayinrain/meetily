@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--root', type=Path, default=Path.home()/'meeting-offline')
     parser.add_argument('--app', type=Path, required=True, help='EXE built from this integration branch')
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--summary-backend', choices=['llamacpp', 'openvino'], default='llamacpp')
     args = parser.parse_args()
     root = args.root.resolve()
     python = root/'speech-service/.venv/Scripts/python.exe'
@@ -23,6 +24,9 @@ def main():
     node = root/'tools/node-v22.23.1-win-x64/node.exe'
     llama = root/'tools/llama-b10809/llama-server.exe'
     model = root/'shared/models/Qwen3.5-4B-Q4_K_M.gguf'
+    if args.summary_backend == 'openvino':
+        llama = root/'tools/openvino-qwen17/.venv/Scripts/python.exe'
+        model = root/'shared/models/Qwen3-1.7B-int4-ov/openvino_model.bin'
     speakers = root/'shared/models/pyannote-community-1'
     service = Path(__file__).resolve().parent.parent/'speech-service/server.py'
     ffmpeg = root/'tools/ffmpeg.exe'
@@ -30,7 +34,7 @@ def main():
         if not file.is_file():
             raise FileNotFoundError(file)
     if args.check:
-        print(json.dumps(dict(files_ready=True, app=str(args.app), service=str(service))))
+        print(json.dumps(dict(files_ready=True, app=str(args.app), service=str(service), summary_backend=args.summary_backend)))
         return
     if os.name != 'nt':
         parser.error('This launcher targets the prepared Windows installation')
@@ -59,7 +63,8 @@ def main():
     owned = None
     stop = run/'service.stop'
     env = dict(os.environ, MEETING_FFMPEG=str(ffmpeg), MEETILY_WORKFLOW_NODE=str(node),
-               MEETILY_WORKFLOW_SERVER=str(llama), MEETILY_WORKFLOW_MODEL=str(model))
+               MEETILY_WORKFLOW_SERVER=str(llama), MEETILY_WORKFLOW_MODEL=str(model),
+               MEETILY_WORKFLOW_BACKEND=args.summary_backend)
     try:
         if health() is None:
             owned = spawn('speech', [python, '-u', service, '--models', root/'shared/models',
