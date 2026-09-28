@@ -8,8 +8,8 @@ import { startModel } from './runtime.mjs';
 import { createGenerator } from './generation.mjs';
 import { createProgress, ranges, joinMaterials, materialRanges } from './progress.mjs';
 import { sections, planChunk, slices, formatSources, chunkTokens, sectionTokens, sectionPromptTokens, directTokens,
-  chunkSystem, directSystem, chunkPrompt, sectionPrompt, sectionMaterials,
-  renderNotes, renderSections, extractSections, splitMaterial, reduceSection } from './sections.mjs';
+  chunkSystem, directSystem, chunkPrompt, sectionPrompt,
+  renderNotes, renderSections, extractSections, splitMaterial } from './sections.mjs';
 
 export function writeJson(file, value) {
   const temporary = file + '.tmp';
