@@ -138,6 +138,8 @@ async fn begin_unlocked<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: &s
             command.env("MEETILY_WORKFLOW_SERVER", server).env("MEETILY_WORKFLOW_MODEL", model);
         }
         write(&directory.join("selected-model.json"), &json!(choice))?;
+        // Manual regeneration can begin finalization before Node writes its first snapshot.
+        write(&directory.join("state.json"), &json!({"status":"starting","workflow":WORKFLOW}))?;
         command.arg(directory.join("runtime/live.mjs")).arg(&directory)
             .stdin(Stdio::piped()).stdout(Stdio::piped())
             .stderr(std::fs::File::create(directory.join("worker.stderr.log")).map_err(|e| e.to_string())?);
