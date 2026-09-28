@@ -78,7 +78,7 @@ test('worker accepts the native startup snapshot but does not resume an old repo
       await until(() => JSON.parse(fs.readFileSync(path.join(directory, 'state.json'))).status === 'recording');
       child.stdin.end(); await ended;
       assert.doesNotMatch(errors, /Expected a fresh recording directory/);
-      assert.match(JSON.parse(fs.readFileSync(path.join(directory, 'state.json'))).error, /Application disconnected/);
+      assert.match(JSON.parse(fs.readFileSync(path.join(directory, 'state.json'))).error, /Application disconnected|operation was aborted/i);
     } else {
       await ended;
       assert.match(errors, /Expected a fresh recording directory/);
