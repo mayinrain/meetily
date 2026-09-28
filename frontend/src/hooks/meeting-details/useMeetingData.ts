@@ -26,6 +26,10 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
 
   // Sidebar context
   const { setCurrentMeeting, setMeetings, meetings: sidebarMeetings } = useSidebar();
+  const listedTitle = sidebarMeetings.find(item => item.id === meeting.id)?.title;
+  useEffect(() => {
+    if (listedTitle) setMeetingTitle(listedTitle);
+  }, [meeting.id, listedTitle]);
 
   // Sync aiSummary state when summaryData prop changes (fixes display of fetched summaries)
   useEffect(() => {

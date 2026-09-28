@@ -43,8 +43,9 @@ const transcriptPage = {
   transcripts: [{ id: 'transcript', text: 'Meeting transcript', timestamp: '00:00' }], total_count: 1, has_more: false,
 };
 let savedSummary: SummaryProcessResponse;
+let backendMeetings: { id: string; title: string }[] = [];
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'api_get_meetings') return [];
+  if (command === 'api_get_meetings') return backendMeetings;
   if (command === 'api_get_summary') return { ...savedSummary, meeting_id: args!.meetingId };
   if (command === 'api_get_meeting_metadata') return readMetadata(args!.meetingId as string);
   if (command === 'api_get_meeting_transcripts') return readTranscripts(args!.meetingId as string);
@@ -53,16 +54,20 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   throw new Error(`Unexpected command: ${command}`);
 });
 mock.module('@tauri-apps/api/core', () => ({ ...originalCore, invoke }));
-const { SidebarProvider } = await import('../../src/components/Sidebar/SidebarProvider');
+const { SidebarProvider, useSidebar } = await import('../../src/components/Sidebar/SidebarProvider');
 const { useSummaryGeneration } = await import('../../src/hooks/meeting-details/useSummaryGeneration');
 const { useMeetingData } = await import('../../src/hooks/meeting-details/useMeetingData');
 
 // Use a lightweight content view around the actual route, transcript loader, state hooks and polling provider.
 let summaryState: ReturnType<typeof useSummaryGeneration>;
 let refresh: () => Promise<void>;
+let refetchSidebar: () => Promise<void>;
+let visibleTitle: string;
 let mounts = 0;
 function SummaryView(props: any) {
   const data = useMeetingData(props);
+  refetchSidebar = useSidebar().refetchMeetings;
+  visibleTitle = data.meetingTitle;
   summaryState = useSummaryGeneration({
     meeting: props.meeting, initialSummary: props.initialSummary, transcripts: data.transcripts,
     modelConfig: { provider: 'ollama', model: 'test', whisperModel: 'base' }, isModelConfigLoading: false,
@@ -86,6 +91,7 @@ beforeEach(() => {
   readTranscripts = async () => transcriptPage;
   savedSummary = { meeting_id: selectedMeeting, status: 'pending', start: 'attempt-a', end: null, data: null, error: null, meetingName: 'Meeting A' };
   mounts = 0; timers.clear(); invoke.mockClear(); notify.mockClear();
+  backendMeetings = [];
   globalThis.setInterval = ((callback: () => Promise<void>) => {
     const id = ++nextTimer; timers.set(id, callback); return id;
   }) as typeof setInterval;
@@ -118,6 +124,13 @@ function deferMetadata() {
 }
 
 describe('meeting route transcript refresh', () => {
+  test('renaming through the meeting list updates the open details title', async () => {
+    await show();
+    backendMeetings = [{ id: 'meeting-a', title: '新的会议标题' }];
+    await act(async () => { await refetchSidebar(); });
+    expect(visibleTitle).toBe('新的会议标题');
+    expect(mounts).toBe(1);
+  });
   test('navigation waits for the new meeting first transcript page before mounting its view', async () => {
     await show();
     await complete('Summary A', 'attempt-a');
