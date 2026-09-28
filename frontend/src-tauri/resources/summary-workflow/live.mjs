@@ -262,7 +262,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
         if (mapped.text) {
           const parts = await splitMaterial(mapped.text, part => {
             const p = sectionPrompt(section, part);
-            return generator.fits(p.system, p.user, sectionTokens, sectionPromptTokens);
+            return generator.fits(p.system, p.user, sectionTokens, model.sectionPromptTokens || sectionPromptTokens);
           });
           let offset = 0;
           for (const [index, part] of parts.entries()) {

@@ -68,7 +68,8 @@ export async function startIntranet(directory, signal) {
   const kill = () => { for (const item of tunnels) item.child.kill(); };
   process.once('exit', kill);
   return {
-    id: intranetModel, retries: 3,
+    // Bound chapter source size for the 35B model's fixed output budget.
+    id: intranetModel, retries: 3, sectionPromptTokens: 768,
     async base(requestSignal = signal) {
       if (isAlive(backend) && isAlive(gateway)) return backend.base;
       await reset();

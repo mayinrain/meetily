@@ -126,8 +126,10 @@ export function createGenerator({ base, directory, writeJson, log, signal, model
           const response = await post('/v1/chat/completions', body, currentSignal);
           currentSignal.throwIfAborted();
           const choice = response.choices?.[0];
+          Object.assign(saved, { finish_reason: choice?.finish_reason, usage: response.usage });
           if (response.usage?.prompt_tokens !== budget.tokens) throw new Error('Tokenizer/usage mismatch');
-          if (choice?.finish_reason !== 'stop' || choice.message.tool_calls?.length) throw new Error('Incomplete model response');
+          if (choice?.finish_reason !== 'stop' || choice.message.tool_calls?.length)
+            throw new Error(`Incomplete model response (${choice?.finish_reason || 'missing finish reason'})`);
           const content = visibleBody(choice.message.content || '', true).trim();
           if (!content) throw new Error('Empty model response');
           Object.assign(saved, { status: 'success', content, response, elapsed_s: (Date.now() - began) / 1000 });

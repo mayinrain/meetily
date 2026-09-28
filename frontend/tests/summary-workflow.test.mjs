@@ -178,18 +178,18 @@ test('a final generation failure preserves raw sources and never labels a partia
   assert.equal(state.source_segments[0].text, '必须保存的原文。'); assert.equal(state.within_post_stop_target, false);
 });
 
-test('long chapters that fit context are split before output truncation, with every sentence preserved', async t => {
+for (const budget of [1536, 768]) test(`chapters respect model prompt budget ${budget} without losing sentences`, async t => {
   const discussion = '- 住房补贴方案仍待讨论。\n'.repeat(90);
   const material = text => text.split('<该章节的全部分片材料>\n')[1]?.split('\n</该章节的全部分片材料>')[0];
   const h = await harness(t, body => {
     const source = material(body.messages[1].content[0].text);
-    if (source !== undefined) return { text: source.length > 1600 ? '被截断的前半章' : source,
-      finish: source.length > 1600 ? 'length' : 'stop' };
+    if (source !== undefined) return { text: source.length > budget ? '被截断的前半章' : source,
+      finish: source.length > budget ? 'length' : 'stop' };
     return { text: `## 主要讨论\n${discussion}` };
   }, 0, text => Array.from(text).length);
   const first = batch(0, [row('a', '甲'.repeat(1300) + '。')]);
   const second = batch(1, [row('b', '乙'.repeat(1300) + '。', 20, 40)]);
-  h.send(snapshot([first])); const running = h.run();
+  h.send(snapshot([first])); const running = h.run({ modelFactory: async () => ({ base: h.base, sectionPromptTokens: budget, stop: async () => {} }) });
   await until(() => h.state().notes.length === 1);
   h.send(snapshot([first, second]));
   await until(() => h.state().notes.length === 2);
@@ -201,7 +201,8 @@ test('long chapters that fit context are split before output truncation, with ev
   assert.doesNotMatch(state.markdown, /被截断/);
   const calls = h.requests.filter(r => material(r.messages[1].content[0].text) !== undefined);
   assert.ok(calls.length > 1);
-  assert.equal(calls.map(r => material(r.messages[1].content[0].text)).join(''), state.notes.map(n => n.content.split('## 主要讨论\n')[1].trim()).join('\n\n'));
+  assert.ok(calls.every(r => Array.from(JSON.stringify(r.messages)).length <= budget));
+  assert.equal(state.final_sections['主要讨论'].replace(/\s/g, ''), state.notes.map(n => n.content.split('## 主要讨论\n')[1]).join('').replace(/\s/g, ''));
   assert.equal(h.maximum(), 1);
 });
 
