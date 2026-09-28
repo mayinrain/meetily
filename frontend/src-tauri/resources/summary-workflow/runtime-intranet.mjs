@@ -68,8 +68,8 @@ export async function startIntranet(directory, signal) {
   const kill = () => { for (const item of tunnels) item.child.kill(); };
   process.once('exit', kill);
   return {
-    // Bound chapter source size for the 35B model's fixed output budget.
-    id: intranetModel, retries: 3, sectionPromptTokens: 768,
+    // Qwen3.5 needs presence suppression to avoid deterministic repetition loops.
+    id: intranetModel, retries: 3, presencePenalty: 1.5, rejectRepeatedOutput: true,
     async base(requestSignal = signal) {
       if (isAlive(backend) && isAlive(gateway)) return backend.base;
       await reset();

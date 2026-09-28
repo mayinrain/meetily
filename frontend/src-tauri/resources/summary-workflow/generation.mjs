@@ -16,7 +16,19 @@ export function visibleBody(raw, complete = false) {
   return body;
 }
 
+function checkRepetition(body) {
+  let previous = '', count = 0;
+  for (const row of body.split('\n')) {
+    const line = row.trim().replace(/^(?:[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)、]\s*)/, '').replace(/\s+/g, ' ');
+    if (!line) continue;
+    count = line.length >= 24 && line === previous ? count + 1 : 1;
+    if (count >= 4) throw Object.assign(new Error('模型输出出现连续重复，已停止本段生成'), { code: 'REPEATED_OUTPUT' });
+    previous = line;
+  }
+}
+
 export function createGenerator({ base, directory, writeJson, log, signal, modelId = 'Qwen3.5-4B',
+    presencePenalty = 0, rejectRepeatedOutput = false,
     stream = true, onText = () => {}, retries = 0, reconnect = async () => {},
     onRetry = () => {}, onAttempt = () => {}, retryDelays = [2000, 5000, 10000], attemptTimeoutMs = retries ? 180000 : 600000 }) {
   const calls = path.join(directory, 'calls'); fs.mkdirSync(calls, { recursive: true });
@@ -26,7 +38,7 @@ export function createGenerator({ base, directory, writeJson, log, signal, model
   const payload = (system, user, maxTokens) => ({ model: modelId,
     messages: [{ role: 'system', content: system }, { role: 'user', content: [{ type: 'text', text: user }] }],
     stream, stream_options: { include_usage: true }, max_tokens: maxTokens, temperature: 0, top_p: 0.9, top_k: 40,
-    min_p: 0, repeat_penalty: 1, presence_penalty: 0, repeat_last_n: 64, seed: 42,
+    min_p: 0, repeat_penalty: 1, presence_penalty: presencePenalty, repeat_last_n: 64, seed: 42,
     chat_template_kwargs: { enable_thinking: false } });
   async function post(endpoint, body, requestSignal = signal) {
     // Local non-streaming inference can take over 300 seconds. Native fetch has
@@ -61,7 +73,12 @@ export function createGenerator({ base, directory, writeJson, log, signal, model
             if (value.error) throw Object.assign(new Error(JSON.stringify(value.error)),
               { retryable: [408, 429, 500, 502, 503, 504].includes(value.error.code) });
             const choice = value.choices?.[0];
-            if (choice?.delta?.content) { raw += choice.delta.content; onText(visibleBody(raw)); }
+            if (choice?.delta?.content) {
+              raw += choice.delta.content;
+              const body = visibleBody(raw);
+              if (rejectRepeatedOutput) checkRepetition(body);
+              onText(body);
+            }
             toolCalls ||= !!choice?.delta?.tool_calls?.length;
             if (choice?.finish_reason) finish = choice.finish_reason;
             if (value.usage) usage = value.usage;
@@ -132,6 +149,7 @@ export function createGenerator({ base, directory, writeJson, log, signal, model
             throw new Error(`Incomplete model response (${choice?.finish_reason || 'missing finish reason'})`);
           const content = visibleBody(choice.message.content || '', true).trim();
           if (!content) throw new Error('Empty model response');
+          if (rejectRepeatedOutput) checkRepetition(content);
           Object.assign(saved, { status: 'success', content, response, elapsed_s: (Date.now() - began) / 1000 });
           writeJson(checkpoint, saved); log('generation_finished', { stage, key, elapsed_s: saved.elapsed_s, usage: response.usage });
           return content;

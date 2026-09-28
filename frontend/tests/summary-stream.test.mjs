@@ -66,6 +66,33 @@ test('abort after a visible fragment preserves cancellation and never commits a 
   assert.equal(JSON.parse(fs.readFileSync(path.join(options.directory, 'calls', file))).status, 'cancelled');
 });
 
+test('intranet repetition is stopped before a fourth long duplicate is displayed or committed', async t => {
+  const sentence = '原文中关于每小时薪资的提问未得到明确回答，仅提及正式员工的基本月薪。';
+  const shown = []; let requests = 0, retries = 0, request;
+  const options = await streamServer(t, async (res, body) => {
+    requests++;
+    request = body;
+    for (let i = 1; i <= 5; i++) res.write(delta(`${i}. ${sentence}\n`));
+    res.end(final() + frame('[DONE]'));
+  });
+  const generator = createGenerator({ ...options, presencePenalty: 1.5, rejectRepeatedOutput: true,
+    retries: 3, onRetry: () => retries++, onText: text => shown.push(text) });
+  await assert.rejects(generator.generate('section_主要讨论', '系统', '原文', 2048), { code: 'REPEATED_OUTPUT' });
+  assert.equal(request.presence_penalty, 1.5);
+  assert.equal(request.temperature, 0); assert.equal(request.repeat_penalty, 1);
+  assert.equal(requests, 1); assert.equal(retries, 0);
+  assert.ok(shown.length > 0 && shown.every(text => text.split(sentence).length <= 4));
+  const saved = JSON.parse(fs.readFileSync(path.join(options.directory, 'calls', fs.readdirSync(path.join(options.directory, 'calls'))[0])));
+  assert.equal(saved.status, 'failed'); assert.equal(saved.content, undefined);
+});
+
+test('repetition guard allows repeated short placeholders, separated facts and distinct numbers', async t => {
+  const text = ['## 会议主题', '未提及', '## 待办事项', '未提及',
+    ...[2000, 2200, 2400, 2600].map(value => `- 原文中关于每小时薪资的提问未得到明确回答，仅提及正式员工的基本月薪为${value}元。`)].join('\n');
+  const options = await streamServer(t, async res => res.end(delta(text) + final() + frame('[DONE]')));
+  assert.equal(await createGenerator({ ...options, rejectRepeatedOutput: true }).generate('section_主要讨论', '系统', '原文', 2048), text);
+});
+
 test('provenance keeps source gaps and maps split material to covering ASR rows', () => {
   assert.deepEqual(ranges([{ start: 10, end: 20 }, { start: 100, end: 120 }, { start: 15, end: 25 }]), [{ start: 10, end: 25 }, { start: 100, end: 120 }]);
   const material = joinMaterials([{ text: '甲的句子', ranges: [{ start: 10, end: 20 }] }, { text: '乙的句子', ranges: [{ start: 100, end: 120 }] }]);

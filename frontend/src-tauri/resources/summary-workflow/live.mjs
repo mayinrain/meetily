@@ -150,6 +150,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
       model = await modelFactory(directory, combined);
       if (model.id) state.model = model.id;
       generator = createGenerator({ base: model.base, modelId: model.id, directory, writeJson, log, signal: combined,
+        presencePenalty: model.presencePenalty, rejectRepeatedOutput: model.rejectRepeatedOutput,
         retries: model.retries, reconnect: model.reconnect, onText: text => progress.text(text),
         onRetry: retry => progress.update({ phase: 'retrying', retry, error: null,
           current: progress.state.current ? { ...progress.state.current, request_id: String(++requestNumber), draft: '' } : null }),
@@ -262,7 +263,7 @@ export async function runLive(directory, { signal, modelFactory = startModel, fr
         if (mapped.text) {
           const parts = await splitMaterial(mapped.text, part => {
             const p = sectionPrompt(section, part);
-            return generator.fits(p.system, p.user, sectionTokens, model.sectionPromptTokens || sectionPromptTokens);
+            return generator.fits(p.system, p.user, sectionTokens, sectionPromptTokens);
           });
           let offset = 0;
           for (const [index, part] of parts.entries()) {
