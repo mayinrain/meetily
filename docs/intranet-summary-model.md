@@ -2,6 +2,24 @@
 
 状态：模型选择、重试与重复修复已实现，Windows 原生完整回归已完成；功能通过，性能和内容质量仍有限制。2026-09-28。独立分支 `codex/meeting-section-summary`，基线 `2567866`。
 
+## 2026-10-12：内网模型切换为 Qwen3.8-Flash-Next
+
+evo-x3 上原先提供 9000 网关的 `PostalOmniInfer` 服务已停止，Qwen3.5-35B-A3B 不再加载。现由手动启动的 `C:\rulith-test\flash-service.py` 托管一个 llama-server，只监听 `127.0.0.1:18085`，模型 ID `Qwen3.8-Flash-Next-UD-Q4_K_XL`（UD-Q4_K_XL 量化、32K 上下文、`--reasoning off`、MTP 草稿投机解码、单槽）。Meetily 不停止、不重启该服务。
+
+`runtime-intranet.mjs` 据此改为：通过同一 provider SSH 身份直接转发远端 18085，先读 `/health`（加载中返回 503，按临时错误重试），再用 `/v1/models` 核对上述模型 ID。不再转发 9000、不再从网关读取动态端口。win11-lan 上的 `intranet-model.json`（`provider@8.138.82.55:8088`，frp 穿透）无需改动；已从 win11-lan 用该身份实测转发 18085 成功，9000 被服务端关闭。
+
+采样去掉了只针对 35B 的 `presence_penalty=1.5`，恢复生成器默认 0；连续重复检测保留。依据是用 2026-09-28 归档的原始死循环请求（`repetition-original-request.json`，仅改 model 字段）直接打新模型：presence 0 为 922 个输出 token、23.8 秒；presence 1.5 为 847 个、17.1 秒；两者均正常 `stop`、无重复行、无思考标签。presence 0 的条目更细，并保留了 35B 曾遗漏的“16 元/小时、工作一周可离职”。这只是单请求对照，不是完整回归；记录在 `artifacts/offline-development/meeting-intranet-20261012/`。
+
+已验证：40 项 Node 测试、54 项前端测试通过；从 Mac 用真实 SSH 调用修改后的 `startIntranet`，模型 ID 核对、一次聊天补全、`model-process.json` 写入与转发进程释放均正常。
+
+**构建与部署**：源码仍为 `3c59d58`，仅叠加上述未提交改动。evo-x3 `build-intranet-flash-01`（Windows release，8 分 47 秒，8 项原生测试通过），程序 SHA-256 `8c93ca18cec08a6f6f90b009d3add0d84ac594dcd01ceff3197bfc0737b761b3`，包 `afade446…`。安装到 win11-lan `C:\Users\admin\meeting-offline\meetily\section-intranet-flash-01\`（ffmpeg/onnxruntime 从 d1fe75e 目录按 SHA 复制），实验入口 `start-meetily-section-summary.cmd` 已指向该目录，旧入口备份为 `start-meetily-section-summary.before-flash-01.cmd`。桌面 `Meeting-Final-20260928` 与 `会议工具.lnk` 未改动，其程序仍是 d1fe75e，内网选项在新服务器下已不可用。
+
+**原生 20 秒短测 `intranet-flash-short-02`**（win11-lan，CABLE 虚拟麦克风原速播放，会议 `meeting-d2a95f59-9bb4-4523-af84-ab5a56e50a0f`）：17 项功能检查通过 16 项。设置页显示新模型名并选中内网；播放全帧、零欠载；说话人标签 17.18 秒可见；穿透转发 18085、`model-process.json` 记录新模型 ID；一次生成 5.02 秒、`stop`、342/109 token、presence 0、无重试；停止后 7.46 秒纪要落库，页面正文与数据库一致，本场固定内网模型，结束后自建 SSH 进程释放。未通过的 `visible_stream_body` 是测试工具时序问题：前端在停止后 4.6–7.2 秒收到 10 个正文增量事件（`stream_events_seen` 为真），而探针要等说话人标签可见后才开始轮询，首次轮询时纪要已完成，`visible-stream.json` 从未写出。这不能证明流式正文在界面上未显示，也不能证明显示了；长音频回归才能覆盖该项。首次 `intranet-flash-short-01` 因 `speech-service/play_realtime.py` 已被清理而播放失败，已从 `services/speech-07` 按相同 SHA 补回。证据归档于 `artifacts/offline-development/meeting-intranet-20261012/`。未做 66 分钟完整回归。
+
+**桌面交付包已更新**：`Desktop\Meeting-Final-20260928\program\meetily.exe` 替换为 flash-01（SHA `8c93ca18…`），旧程序保留为同目录 `meetily.d1fe75e.exe.bak`；使用说明、验证记录、`version.json`、`manifest.json` 同步更新，`--check` 通过；重新打包的 zip SHA `d7bedef7e3dc5c34efc8ddb24d2cc4fb07d2ac2289219b94eadaf4810f769a48`（76,047,042 B，包含备份 exe），旧 zip 保留为 `Meeting-Final-20260928.d1fe75e.zip.bak`。`会议工具.lnk` 未动。用桌面入口的启动器实际启动一次：运行的是包内新 exe，设置页只显示新模型名，当前选择内网，正常退出后无残留进程。
+
+以下为 2026-09-28 针对 35B 的原始记录，其中 9000 网关与 presence 参数的描述已不再适用。
+
 ## 用户界面
 
 侧栏恢复“设置”入口，页面只有“总结模型”一项，自动保存到当前用户的 `summary-model.json`：

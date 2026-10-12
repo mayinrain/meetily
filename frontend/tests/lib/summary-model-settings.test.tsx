@@ -21,7 +21,7 @@ test('loads saved choice and saves exactly the chosen summary model', async () =
   expect(radios().find(r => r.props.value === 'intranet')!.props.checked).toBe(true);
   await act(async () => { await radios().find(r => r.props.value === 'builtin')!.props.onChange(); });
   expect(stored).toBe('builtin');
-  expect(JSON.stringify(renderer.toJSON())).toContain('Qwen3.5-35B-A3B');
+  expect(JSON.stringify(renderer.toJSON())).toContain('Qwen3.8-Flash-Next');
   expect(JSON.stringify(renderer.toJSON())).toContain('Qwen3-1.7B');
   expect(invoke).toHaveBeenCalledWith('set_summary_model', { model: 'builtin' });
 });

@@ -25,7 +25,7 @@ export default function SettingsPage() {
       <fieldset disabled={model === null || saving}>
         <legend className="mb-3 text-base font-medium">总结模型</legend>
         <div className="space-y-3">
-          {([['builtin', '内置模型（Qwen3-1.7B）'], ['intranet', '内网模型（Qwen3.5-35B-A3B）']] as const).map(([value, label]) =>
+          {([['builtin', '内置模型（Qwen3-1.7B）'], ['intranet', '内网模型（Qwen3.8-Flash-Next）']] as const).map(([value, label]) =>
             <label key={value} className={`flex cursor-pointer items-center gap-3 rounded-lg border p-4 ${model === value ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
               <input type="radio" name="summary-model" value={value} checked={model === value} onChange={() => void choose(value)} />
               <span>{label}</span>

@@ -4,10 +4,12 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-export const intranetModel = 'Qwen_Qwen3.5-35B-A3B-Q6_K_L.gguf';
+export const intranetModel = 'Qwen3.8-Flash-Next-UD-Q4_K_XL';
+// llama-server bound to loopback on the model host; only reachable through our own forward.
+export const intranetPort = 18085;
 const temporary = message => Object.assign(new Error(message), { retryable: true });
 
-// Both forwards belong to this worker. The remote gateway and model stay running.
+// The forward belongs to this worker. The remote model server stays running.
 export async function startIntranet(directory, signal) {
   const file = process.env.MEETILY_INTRANET_CONFIG;
   if (!file || !fs.existsSync(file)) throw new Error('内网模型连接尚未配置');
@@ -16,7 +18,7 @@ export async function startIntranet(directory, signal) {
       || !fs.existsSync(config.identity_file || '') || !fs.existsSync(config.known_hosts || ''))
     throw new Error('内网模型 SSH 配置或密钥文件不可用');
   const tunnels = new Set();
-  let gateway, backend;
+  let backend;
   async function tunnel(remotePort, requestSignal) {
     const reservation = net.createServer();
     await new Promise((resolve, reject) => { reservation.once('error', reject); reservation.listen(0, '127.0.0.1', resolve); });
@@ -63,27 +65,24 @@ export async function startIntranet(directory, signal) {
     await item.closed; tunnels.delete(item);
   }
   async function reset() {
-    await Promise.all([...tunnels].map(close)); gateway = backend = null;
+    await Promise.all([...tunnels].map(close)); backend = null;
   }
   const kill = () => { for (const item of tunnels) item.child.kill(); };
   process.once('exit', kill);
   return {
-    // Qwen3.5 needs presence suppression to avoid deterministic repetition loops.
-    id: intranetModel, retries: 3, presencePenalty: 1.5, rejectRepeatedOutput: true,
+    // Repetition guard kept as a safety net; Qwen3.8-Flash-Next did not loop at presence_penalty 0.
+    id: intranetModel, retries: 3, rejectRepeatedOutput: true,
     async base(requestSignal = signal) {
-      if (isAlive(backend) && isAlive(gateway)) return backend.base;
+      if (isAlive(backend)) return backend.base;
       await reset();
-      gateway = await tunnel(9000, requestSignal);
-      const health = await json(gateway, '/health', requestSignal);
-      const model = health.omni?.loaded_models?.find(m => String(m.id).replaceAll('\\', '/').split('/').at(-1) === intranetModel);
-      if (!model) throw temporary('内网服务暂未加载 Qwen3.5-35B-A3B');
-      if (!Number.isInteger(model.backend_port) || model.backend_port < 1 || model.backend_port > 65535)
-        throw temporary('内网模型正在准备，请稍候');
-      backend = await tunnel(model.backend_port, requestSignal);
+      backend = await tunnel(intranetPort, requestSignal);
+      // llama-server answers 503 while weights are still loading; json() treats that as retryable.
+      const health = await json(backend, '/health', requestSignal);
+      if (health.status !== 'ok') throw temporary('内网模型正在准备，请稍候');
       const models = await json(backend, '/v1/models', requestSignal);
       if (!models.data?.some(m => m.id === intranetModel)) throw new Error('内网模型标识不匹配');
       fs.writeFileSync(path.join(directory, 'model-process.json'), JSON.stringify({
-        backend: 'intranet', model: intranetModel, remote_port: model.backend_port,
+        backend: 'intranet', model: intranetModel, remote_port: intranetPort,
         tunnel_pids: [...tunnels].map(t => t.child.pid) }));
       return backend.base;
     },
